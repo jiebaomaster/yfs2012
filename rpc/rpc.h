@@ -278,17 +278,18 @@ class rpcs : public chanmgr {
         // if cb_present is true, then the RPC is complete and a reply
         // has been sent; in that case buf points to a copy of the reply,
         // and sz holds the size of the reply.
-	struct reply_t {
+	struct reply_t { // rpc请求的回复
 		reply_t (unsigned int _xid) {
 			xid = _xid;
 			cb_present = false;
 			buf = NULL;
 			sz = 0;
 		}
-		unsigned int xid;
+		unsigned int xid; // 回复的 rpc 请求 id
 		bool cb_present; // whether the reply buffer is valid
-		char *buf;      // the reply buffer
-		int sz;         // the size of reply buffer
+										// true=返回值还未产生，正在处理请求；false=已有返回值，已经处理完毕的请求
+		char *buf;      // the reply buffer，保存 rpc 请求的返回值
+		int sz;         // the size of reply buffer，返回值所占空间大小
 	};
 
 	int port_;
