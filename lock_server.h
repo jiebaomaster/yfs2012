@@ -5,6 +5,7 @@
 #define lock_server_h
 
 #include <string>
+#include <map>
 #include "lock_protocol.h"
 #include "lock_client.h"
 #include "rpc.h"
@@ -13,11 +14,15 @@ class lock_server {
 
  protected:
   int nacquire;
+  std::map<lock_protocol::lockid_t, lock*> lockid_lock; // 锁id=》锁
+  pthread_mutex_t map_mutex; // 互斥量保护多线程访问 map
 
  public:
   lock_server();
   ~lock_server() {};
   lock_protocol::status stat(int clt, lock_protocol::lockid_t lid, int &);
+  lock_protocol::status acquire(int clt, lock_protocol::lockid_t lid, int &);
+  lock_protocol::status release(int clt, lock_protocol::lockid_t lid, int &);
 };
 
 #endif 
