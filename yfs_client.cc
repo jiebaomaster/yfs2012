@@ -121,6 +121,14 @@ int yfs_client::random_inum(bool isfile) {
   return ret & 0xffffffff;
 }
 
+/**
+ * @brief 在父目录 parent 中创建一个 id 为 inum 名字为 name 的新文件，文件内容为空
+ * 
+ * @param parent 父目录 id
+ * @param name 待创建文件的文件名
+ * @param inum 待创建文件的 id
+ * @return int 
+ */
 int yfs_client::create(inum parent, const char* name, inum &inum) {
   int r = OK;
   string dir_data;
@@ -235,3 +243,88 @@ release:
 }
 
 
+/**
+ * @brief 设置文件 inum 的属性，目前仅支持修改文件大小
+ * 
+ * @param inum 目标文件 id
+ * @param attr 
+ * @return int 
+ */
+int yfs_client::setattr(inum inum, struct stat *attr) {
+  int r = OK;
+  size_t sz = attr->st_size;
+  string file_data;
+  if (ec->get(inum, file_data) != extent_protocol::OK) {
+    r = IOERR;
+    goto release;
+  }
+  file_data.resize(sz, '\0');
+  if (ec->put(inum, file_data) != extent_protocol::OK) r = IOERR;
+
+release:
+  return r;
+}
+
+/**
+ * @brief 从文件 inum 的偏移 off 处读取 sz 大小的字节到 buf 中
+ *
+ * @param inum 目标文件 id
+ * @param off 文件偏移
+ * @param sz 读取字节数
+ * @param buf 读取缓冲区
+ * @return int
+ */
+int yfs_client::read(inum inum, off_t off, size_t sz, std::string &buf) {
+  int r = OK;
+  string file_data;
+  if (ec->get(inum, file_data) != extent_protocol::OK) {
+    r = IOERR;
+    goto release;
+  }
+
+  // 如果 off 比文件长度，大则读取 0 个字节
+  if(off >= file_data.size()) {
+    buf = string();
+    goto release;
+  }
+  // 如果 off+sz 超出了文件大小，则读到文件尾即可
+  if(off + sz > file_data.size())
+    sz = file_data.size() - off;
+
+  buf = file_data.substr(off, sz);
+
+release:
+  return r;
+}
+
+
+/**
+ * @brief 将 buf 中 sz 个字节写入到文件 inum 的偏移 off 处
+ * 
+ * @param inum 目标文件 id
+ * @param off 文件偏移
+ * @param sz 写入字节数
+ * @param buf 写入缓冲区
+ * @return int 
+ */
+int yfs_client::write(inum inum, off_t off, size_t sz, const char *buf) {
+  int r = OK;
+  string file_data;
+  if (ec->get(inum, file_data) != extent_protocol::OK) {
+    r = IOERR;
+    goto release;
+  }
+  // 如果 off+sz 比文件长度大，需要扩展文件大小
+  if (off + sz > file_data.size()) {
+    file_data.resize(off + sz, '\0');
+  }
+  // 将 buf 逐字符拷贝到 file_data
+  for (int i = 0; i < sz; i++) {
+    file_data[off + i] = buf[i];
+  }
+  // 将修改后的文件数据写回
+  if (ec->put(inum, file_data) != extent_protocol::OK) r = IOERR;
+
+release:
+  return r;
+}
