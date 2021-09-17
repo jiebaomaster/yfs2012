@@ -17,20 +17,21 @@ class yfs_client {
   enum xxstatus { OK, RPCERR, NOENT, IOERR, EXIST };
   typedef int status;
 
-  struct fileinfo {
+  struct fileinfo { // 文件信息
     unsigned long long size;
     unsigned long atime;
     unsigned long mtime;
     unsigned long ctime;
   };
-  struct dirinfo {
+  struct dirinfo { // 目录信息
     unsigned long atime;
     unsigned long mtime;
     unsigned long ctime;
   };
-  struct dirent {
-    std::string name;
-    yfs_client::inum inum;
+  struct dirent { // 目录项
+    std::string name; // 文件/目录 名
+    yfs_client::inum inum; // 标识文件/目录的唯一 id
+                    // 高 32 位为 0，文件 31 位为 1，目录 31 位为 0
   };
 
  private:
@@ -45,6 +46,13 @@ class yfs_client {
 
   int getfile(inum, fileinfo &);
   int getdir(inum, dirinfo &);
+  int random_inum(bool);
+  int create(inum, const char*, inum&);
+  int lookup(inum, const char*, inum&, bool*);
+  int readdir(inum, std::list<dirent>&);
+  int setattr(inum, struct stat*);
+  int read(inum, off_t, size_t, std::string&);
+  int write(inum, off_t, size_t, const char*);
 };
 
 #endif 

@@ -2,6 +2,7 @@
 #include <arpa/inet.h>
 #include <stdlib.h>
 #include <stdio.h>
+#include <unistd.h>
 #include "lock_server.h"
 
 #include "jsl_log.h"
@@ -33,6 +34,9 @@ main(int argc, char *argv[])
 #ifndef RSM
   lock_server ls;
   rpcs server(atoi(argv[1]), count);
+  // 给 rpc 服务器注册请求处理函数
+  server.reg(lock_protocol::acquire, &ls, &lock_server::acquire);
+  server.reg(lock_protocol::release, &ls, &lock_server::release);
   server.reg(lock_protocol::stat, &ls, &lock_server::stat);
 #endif
 

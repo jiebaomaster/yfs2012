@@ -126,9 +126,19 @@ fuseserver_setattr(fuse_req_t req, fuse_ino_t ino, struct stat *attr,
     printf("   fuseserver_setattr set size to %zu\n", attr->st_size);
     struct stat st;
     // You fill this in for Lab 2
-#if 0
+#if 1
     // Change the above line to "#if 1", and your code goes here
     // Note: fill st using getattr before fuse_reply_attr
+    
+    if (yfs->setattr(ino, attr) != yfs_client::OK) {
+      fuse_reply_err(req, ENOENT);
+      return;
+    }
+    if (getattr(ino, st) != yfs_client::OK) {
+      fuse_reply_err(req, ENOENT);
+      return;
+    }
+
     fuse_reply_attr(req, &st, 0);
 #else
     fuse_reply_err(req, ENOSYS);
@@ -155,9 +165,15 @@ fuseserver_read(fuse_req_t req, fuse_ino_t ino, size_t size,
                 off_t off, struct fuse_file_info *fi)
 {
   // You fill this in for Lab 2
-#if 0
+#if 1
   std::string buf;
   // Change the above "#if 0" to "#if 1", and your code goes here
+
+  if (yfs->read(ino, off, size, buf) != yfs_client::OK) {
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
+
   fuse_reply_buf(req, buf.data(), buf.size());
 #else
   fuse_reply_err(req, ENOSYS);
@@ -185,8 +201,13 @@ fuseserver_write(fuse_req_t req, fuse_ino_t ino,
                  struct fuse_file_info *fi)
 {
   // You fill this in for Lab 2
-#if 0
+#if 1
   // Change the above line to "#if 1", and your code goes here
+  if (yfs->write(ino, off, size, buf) != yfs_client::OK) {
+    fuse_reply_err(req, ENONET);
+    return;
+  }
+
   fuse_reply_write(req, size);
 #else
   fuse_reply_err(req, ENOSYS);
@@ -220,7 +241,13 @@ fuseserver_createhelper(fuse_ino_t parent, const char *name,
   e->entry_timeout = 0.0;
   e->generation = 0;
   // You fill this in for Lab 2
-  return yfs_client::NOENT;
+  yfs_client::status ret;
+  yfs_client::inum inum; // 
+  if((ret = yfs->create(parent, name, inum)) == yfs_client::OK) {
+    e->ino = inum;
+    getattr(inum, e->attr);
+  }
+  return ret;
 }
 
 void
@@ -271,6 +298,11 @@ fuseserver_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
   bool found = false;
 
   // You fill this in for Lab 2
+  yfs_client::inum inum;
+  if (yfs->lookup(parent, name, inum, &found) == yfs_client::OK) {
+    e.ino = inum;
+    getattr(inum, e.attr);
+  }
   if (found)
     fuse_reply_entry(req, &e);
   else
@@ -332,7 +364,15 @@ fuseserver_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 
 
   // You fill this in for Lab 2
+  std::list<yfs_client::dirent> dirents;
+  if (yfs->readdir(inum, dirents) != yfs_client::OK) {
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
 
+  for(auto &d : dirents) {
+    dirbuf_add(&b, d.name.c_str(), d.inum);
+  }
 
   reply_buf_limited(req, b.p, b.size, off, size);
   free(b.p);
@@ -431,6 +471,7 @@ main(int argc, char *argv[])
 
   yfs = new yfs_client(argv[2], argv[3]);
 
+  // 注册文件系统的操作函数
   fuseserver_oper.getattr    = fuseserver_getattr;
   fuseserver_oper.statfs     = fuseserver_statfs;
   fuseserver_oper.readdir    = fuseserver_readdir;
