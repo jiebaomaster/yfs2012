@@ -9,7 +9,7 @@
 #include <vector>
 
 // Client interface to the lock server
-class lock_client {
+class lock_client { // rpc 客户端的接口类，调用 rpc 服务
  protected:
   rpcc *cl;
  public:

@@ -220,7 +220,13 @@ fuseserver_createhelper(fuse_ino_t parent, const char *name,
   e->entry_timeout = 0.0;
   e->generation = 0;
   // You fill this in for Lab 2
-  return yfs_client::NOENT;
+  yfs_client::status ret;
+  yfs_client::inum inum; // 
+  if((ret = yfs->create(parent, name, inum)) == yfs_client::OK) {
+    e->ino = inum;
+    getattr(inum, e->attr);
+  }
+  return ret;
 }
 
 void
@@ -271,6 +277,11 @@ fuseserver_lookup(fuse_req_t req, fuse_ino_t parent, const char *name)
   bool found = false;
 
   // You fill this in for Lab 2
+  yfs_client::inum inum;
+  if (yfs->lookup(parent, name, inum, &found) == yfs_client::OK) {
+    e.ino = inum;
+    getattr(inum, e.attr);
+  }
   if (found)
     fuse_reply_entry(req, &e);
   else
@@ -332,7 +343,15 @@ fuseserver_readdir(fuse_req_t req, fuse_ino_t ino, size_t size,
 
 
   // You fill this in for Lab 2
+  std::list<yfs_client::dirent> dirents;
+  if (yfs->readdir(inum, dirents) != yfs_client::OK) {
+    fuse_reply_err(req, ENOENT);
+    return;
+  }
 
+  for(auto &d : dirents) {
+    dirbuf_add(&b, d.name.c_str(), d.inum);
+  }
 
   reply_buf_limited(req, b.p, b.size, off, size);
   free(b.p);
@@ -431,6 +450,7 @@ main(int argc, char *argv[])
 
   yfs = new yfs_client(argv[2], argv[3]);
 
+  // 注册文件系统的操作函数
   fuseserver_oper.getattr    = fuseserver_getattr;
   fuseserver_oper.statfs     = fuseserver_statfs;
   fuseserver_oper.readdir    = fuseserver_readdir;
