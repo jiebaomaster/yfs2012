@@ -10,7 +10,9 @@
 #include "lock_client.h"
 
 class yfs_client {
-  extent_client *ec;
+  extent_client *ec; // 文件储存服务客户端
+  lock_client *lc; // 锁服务客户端
+
  public:
 
   typedef unsigned long long inum;
@@ -40,6 +42,7 @@ class yfs_client {
  public:
 
   yfs_client(std::string, std::string);
+  ~yfs_client();
 
   bool isfile(inum);
   bool isdir(inum);
@@ -57,4 +60,17 @@ class yfs_client {
   int unlink(inum, const char*);
 };
 
+// 分布式锁的辅助类
+class yfs_lock {
+  lock_client *lc; // 锁服务客户端
+  lock_protocol::lockid_t lid; // 本次锁定的锁 id
+
+ public:
+  // 构造时锁定
+  yfs_lock(lock_client *lc, lock_protocol::lockid_t lid) : lc(lc), lid(lid) {
+    lc->acquire(lid);
+  }
+  // 析构时释放
+  ~yfs_lock() { lc->release(lid); }
+};
 #endif 
