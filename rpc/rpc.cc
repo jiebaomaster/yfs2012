@@ -69,6 +69,7 @@
 #include <netinet/tcp.h>
 #include <time.h>
 #include <netdb.h>
+#include <unistd.h>
 
 #include "jsl_log.h"
 #include "gettime.h"
@@ -656,13 +657,57 @@ rpcs::dispatch(djob_t *j)
 //   INPROGRESS: seen this xid, and still processing it.
 //   DONE: seen this xid, previous reply returned in *b and *sz.
 //   FORGOTTEN: might have seen this xid, but deleted previous reply.
-rpcs::rpcstate_t 
-rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
-		unsigned int xid_rep, char **b, int *sz)
-{
-	ScopedLock rwl(&reply_window_m_);
+/**
+ * @brief 判断当前请求的类别，处理重复的 rpc 请求
+ * 
+ * @param clt_nonce 客户端 id
+ * @param xid 客户端请求的 id
+ * @param xid_rep 客户端确认收到回复的 id
+ * @param b 
+ * @param sz 
+ * @return rpcs::rpcstate_t 
+ */
+rpcs::rpcstate_t rpcs::checkduplicate_and_update(unsigned int clt_nonce,
+                                                 unsigned int xid,
+                                                 unsigned int xid_rep, char **b,
+                                                 int *sz) {
+  ScopedLock rwl(&reply_window_m_);
 
-        // You fill this in for Lab 1.
+  auto iter = reply_window_[clt_nonce].begin();
+	// 遍历整个滑动窗口
+	while(iter != reply_window_[clt_nonce].end()) {
+		if (iter->xid < xid_rep && iter->cb_present) { // 比确认收到的请求id小的请求都可以释放
+			free(iter->buf);
+			iter = reply_window_[clt_nonce].erase(iter);
+			continue;
+		}	
+		if (xid == iter->xid) { // 找到id相同的请求
+			if(iter->cb_present) { // 已完成的请求，直接返回保存的返回值
+				*b = iter->buf;
+				*sz = iter->sz;
+				return DONE;
+			} else { // 未完成的请求
+				return INPROGRESS;
+			}
+		} 	
+		// 当前请求的id比滑动窗口最左边的还小，说明这是一个已经被确实收到过的请求
+		if(reply_window_[clt_nonce].front().xid > xid) 
+			return FORGOTTEN;
+		iter++;
+	}
+
+	// 这是一个新的请求，新建对应于该请求的回复对象
+	reply_t reply(xid);
+	// 因为较后发送的请求可能会比较早发出的请求先到达，所以需要遍历滑动窗口链表
+	for (iter = reply_window_[clt_nonce].begin(); iter != reply_window_[clt_nonce].end(); iter++) {
+		if(iter->xid > xid) {
+			reply_window_[clt_nonce].insert(iter, reply); // 前插
+			break;
+		}		
+	}
+	// 最后发出的请求，插入滑动窗口链表的最后面
+	if(iter == reply_window_[clt_nonce].end())
+		reply_window_[clt_nonce].push_back(reply);
 	return NEW;
 }
 
@@ -671,12 +716,30 @@ rpcs::checkduplicate_and_update(unsigned int clt_nonce, unsigned int xid,
 // add_reply() should remember b and sz.
 // free_reply_window() and checkduplicate_and_update is responsible for 
 // calling free(b).
-void
-rpcs::add_reply(unsigned int clt_nonce, unsigned int xid,
-		char *b, int sz)
-{
-	ScopedLock rwl(&reply_window_m_);
-        // You fill this in for Lab 1.
+/**
+ * @brief 一个新的请求处理完毕，填充其在滑动窗口中的回复结构体
+ * 
+ * @param clt_nonce 客户端 id
+ * @param xid 请求的 id
+ * @param b 
+ * @param sz 
+ */
+void rpcs::add_reply(unsigned int clt_nonce, unsigned int xid, char *b,
+                     int sz) {
+  ScopedLock rwl(&reply_window_m_);
+
+  auto clt = reply_window_.find(clt_nonce);
+  if (clt != reply_window_.end()) {
+		// 遍历滑动窗口链表，找到对应的回复结构体
+    for (auto iter = clt->second.begin(); iter != clt->second.end(); iter++) {
+      if (iter->xid == xid) {
+        iter->buf = b;
+        iter->sz = sz;
+        iter->cb_present = true; // 标记请求处理已经完成
+        break;
+      }
+    }
+  }
 }
 
 void

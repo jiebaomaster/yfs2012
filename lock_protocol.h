@@ -27,4 +27,20 @@ class rlock_protocol {
     retry = 0x8002
   };
 };
+
+// 锁
+class lock {
+ public:
+  enum lock_status { FREE, LOCKED };
+
+  lock_protocol::lockid_t lid;  // 锁 id
+  int status;                   // 锁的状态
+  // 条件变量，当锁是 LOCKED 时，其他要获取该锁的线程必须等待；
+  // 当锁的状态变为 FREE 时，需要唤醒等待该锁的进程
+  pthread_cond_t lcond;
+
+  lock(lock_protocol::lockid_t);
+  lock(lock_protocol::lockid_t, int);
+  ~lock(){};
+};
 #endif 

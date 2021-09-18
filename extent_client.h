@@ -7,6 +7,7 @@
 #include "extent_protocol.h"
 #include "rpc.h"
 
+// rpc 客户端的接口类，调用 rpc 服务，使得我们可以灵活修改更换 rpc 框架
 class extent_client {
  private:
   rpcc *cl;
