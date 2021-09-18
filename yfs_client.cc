@@ -333,3 +333,88 @@ int yfs_client::write(inum inum, off_t off, size_t sz, const char *buf) {
 release:
   return r;
 }
+
+/**
+ * @brief 在父目录 parent 中创建一个 id 为 inum 名字为 name 的新目录，目录内容为空
+ * 
+ * @param parent 父目录 id
+ * @param name 待创建目录的名字
+ * @param mode 权限
+ * @param inum 待创建目录的 id
+ * @return int 
+ */
+int yfs_client::mkdir(inum parent, const char* name, mode_t mode, inum &inum) {
+  int r = OK;
+  string dir_data;
+  string dir_name;
+  // 调用 get 获取父目录的目录项数据
+  if(ec->get(parent, dir_data) != extent_protocol::OK) {
+    r = IOERR;
+    goto release;
+  }
+  dir_name = "/" + string(name) + "/";
+  if(dir_data.find(dir_name) != string::npos) {
+    return EXIST; // 父目录中已经有同名目录项
+  }
+
+  // 生成一个随机的 inum 作为新创建目录的 inum
+  inum = random_inum(false);
+  // 调用 put 创建一个空文件
+  if(ec->put(inum, "") != extent_protocol::OK) {
+    r = IOERR;
+    goto release;
+  }
+
+  // 在父目录中添加目录项
+  dir_data.append(dir_name + filename(inum) + "/");
+  // 调用 put 更新父目录的目录项
+  if(ec->put(parent, dir_data) != extent_protocol::OK)
+    r = IOERR;
+
+release:
+  return r;
+}
+
+/**
+ * @brief 从父目录中删除文件，这里不考虑引用计数，直接删除
+ * 
+ * @param parent 父目录 id
+ * @param name 待删除文件的名字
+ * @return int 
+ */
+int yfs_client::unlink(inum parent, const char *name) {
+  int r = OK;
+  string dir_data;
+  size_t pos, inum_start, end;
+  inum inum;
+  // 调用 get 获取父目录的目录项数据
+  if(ec->get(parent, dir_data) != yfs_client::OK) {
+    r = IOERR;
+    goto release;
+  }
+  // 查找目标文件的目录项
+  if((pos = dir_data.find(name)) == string::npos) {
+    r = NOENT;
+    goto release;
+  }
+  
+  inum_start = dir_data.find_first_of("/", pos);
+  end = dir_data.find_first_of("/", inum_start + 1);
+  inum = n2i(dir_data.substr(inum_start + 1, end - inum_start - 1));
+  if (!isfile(inum)) { // 只能删除文件
+    r = IOERR;
+    goto release;
+  }
+
+  dir_data.erase(pos - 1, end - pos + 2); // 将目录项从父目录中删除
+  if(ec->put(parent, dir_data) != yfs_client::OK) {
+    r = IOERR;
+    goto release;
+  }
+  // 删除目标文件
+  if(ec->remove(inum) != yfs_client::OK) 
+    r = IOERR;  
+
+release:
+  return r;
+}
