@@ -8,6 +8,7 @@
 
 #include "lock_protocol.h"
 #include "lock_client.h"
+#include "lock_client_cache.h"
 
 class yfs_client {
   extent_client *ec; // 文件储存服务客户端

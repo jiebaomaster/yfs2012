@@ -15,7 +15,7 @@ using std::string;
 yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
   ec = new extent_client(extent_dst);
-  lc = new lock_client(lock_dst);
+  lc = new lock_client_cache(lock_dst);
 }
 
 yfs_client::~yfs_client() {
@@ -332,7 +332,7 @@ int yfs_client::write(inum inum, off_t off, size_t sz, const char *buf) {
     file_data.resize(off + sz, '\0');
   }
   // 将 buf 逐字符拷贝到 file_data
-  for (int i = 0; i < sz; i++) {
+  for (size_t i = 0; i < sz; i++) {
     file_data[off + i] = buf[i];
   }
   // 将修改后的文件数据写回

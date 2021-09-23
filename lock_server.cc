@@ -8,11 +8,11 @@
 
 #include <sstream>
 
-lock::lock(lock_protocol::lockid_t lid) : lid(lid), status(lock::FREE) {
+lock_server::lock::lock(lock_protocol::lockid_t lid) : lid(lid), status(lock::FREE) {
   pthread_cond_init(&lcond, NULL);
 }
 
-lock::lock(lock_protocol::lockid_t lid, int stat) : lid(lid), status(stat) {
+lock_server::lock::lock(lock_protocol::lockid_t lid, int stat) : lid(lid), status(stat) {
   pthread_cond_init(&lcond, NULL);
 }
 
@@ -39,7 +39,7 @@ lock_protocol::status lock_server::stat(int clt, lock_protocol::lockid_t lid,
 /**
  * @brief 获取 id 为 lid
  * 的锁。锁服务器是开放式的，如果请求的锁不存在, 就创建一个新锁加入到lockmap中,
- * 并确保新创建的锁被锁客户端获取
+ * 并确保新创建的锁被当前请求锁的客户端获取
  *
  * @param clt rpc 客户端的 id
  * @param lid 请求的锁的 id
