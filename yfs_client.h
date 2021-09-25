@@ -11,6 +11,7 @@
 #include "lock_client_cache.h"
 
 class yfs_client {
+  // 利用多态特性，存储基类指针，后期可以使用派生类进行功能扩展
   extent_client *ec; // 文件储存服务客户端
   lock_client *lc; // 锁服务客户端
 
@@ -61,7 +62,12 @@ class yfs_client {
   int unlink(inum, const char*);
 };
 
-// 分布式锁的辅助类
+/**
+ * 分布式锁的辅助类。文件缓存的刷新由锁的获取释放驱动。客户端在获取
+ * 文件时先获取锁，触发锁的释放，刷新文件，保证分布式系统的文件一致性。
+ * 这种协议的缺点是对文件的所有操作都要依赖锁，多个读之间也不可并行，
+ * 对锁的竞争较大。
+ */
 class yfs_lock {
   lock_client *lc; // 锁服务客户端
   lock_protocol::lockid_t lid; // 本次锁定的锁 id
@@ -74,4 +80,19 @@ class yfs_lock {
   // 析构时释放
   ~yfs_lock() { lc->release(lid); }
 };
+
+/**
+ * 文件缓存的刷新由锁的获取释放驱动，而文件的刷新操作属于文件客户端
+ * extent_client_cache，锁客户端需要借助该辅助类使用文件的刷新操作，
+ * 从而解耦锁客户端和文件客户端
+ */
+class lock_user : public lock_release_user {
+ public:
+  lock_user(extent_client_cache *e) : ec(e){};
+  void dorelease(lock_protocol::lockid_t lid) override { ec->flush(lid); }
+
+ private:
+  extent_client_cache *ec; // 依赖的文件客户端
+};
+
 #endif 

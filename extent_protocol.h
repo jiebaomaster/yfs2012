@@ -22,6 +22,7 @@ class extent_protocol {
     unsigned int mtime; // 修改时间
     unsigned int ctime; // 创建时间
     unsigned int size; // 文件大小
+    attr() : atime(0), mtime(0), ctime(0), size(0) {}
   };
 };
 

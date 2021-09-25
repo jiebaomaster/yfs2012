@@ -14,8 +14,10 @@ using std::string;
 
 yfs_client::yfs_client(std::string extent_dst, std::string lock_dst)
 {
-  ec = new extent_client(extent_dst);
-  lc = new lock_client_cache(lock_dst);
+  extent_client_cache *tmp;
+  tmp = new extent_client_cache(extent_dst);
+  ec = tmp;
+  lc = new lock_client_cache(lock_dst, new lock_user(tmp));
 }
 
 yfs_client::~yfs_client() {
@@ -82,6 +84,8 @@ yfs_client::getfile(inum inum, fileinfo &fin)
 
   printf("getfile %016llx\n", inum);
   extent_protocol::attr a;
+  // for lab5
+  yfs_lock ylc(lc, inum);
   if (ec->getattr(inum, a) != extent_protocol::OK) {
     r = IOERR;
     goto release;
@@ -107,6 +111,8 @@ yfs_client::getdir(inum inum, dirinfo &din)
 
   printf("getdir %016llx\n", inum);
   extent_protocol::attr a;
+  // for lab5
+  yfs_lock ylc(lc, inum);
   if (ec->getattr(inum, a) != extent_protocol::OK) {
     r = IOERR;
     goto release;
@@ -186,7 +192,8 @@ int yfs_client::lookup(inum parent, const char *name, inum &inum, bool *found) {
   size_t pos, end;
   string dir_data;   // 父目录的数据
   string file_name;  // 当前文件的文件名
-
+  // for lab5
+  yfs_lock ylc(lc, parent);
   // 调用 get 获取父目录的目录项数据
   if (ec->get(parent, dir_data) != extent_protocol::OK) {
     r = IOERR;
@@ -226,7 +233,8 @@ int yfs_client::readdir(inum inum, std::list<dirent> &dirents) {
   int r = OK;
   string dir_data;
   size_t pos = 0, end;
-
+  // for lab5
+  yfs_lock ylc(lc, inum);
   // 调用 get 获取目标目录的目录项数据
   if(ec->get(inum, dir_data) != extent_protocol::OK) {
     r = IOERR;
@@ -289,6 +297,8 @@ release:
 int yfs_client::read(inum inum, off_t off, size_t sz, std::string &buf) {
   int r = OK;
   string file_data;
+  // for lab5
+  yfs_lock ylc(lc, inum);
   if (ec->get(inum, file_data) != extent_protocol::OK) {
     r = IOERR;
     goto release;
@@ -361,6 +371,7 @@ int yfs_client::mkdir(inum parent, const char* name, mode_t mode, inum &inum) {
     r = IOERR;
     goto release;
   }
+
   dir_name = "/" + string(name) + "/";
   if(dir_data.find(dir_name) != string::npos) {
     return EXIST; // 父目录中已经有同名目录项

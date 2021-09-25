@@ -37,7 +37,7 @@ class lock_client_cache : public lock_client {
   };
 
  private:
-  class lock_release_user *lu;
+  class lock_release_user *lu; // 辅助类，执行文件缓存的刷新
   int rlock_port;
   std::string hostname;
   std::string id;

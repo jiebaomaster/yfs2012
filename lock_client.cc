@@ -16,6 +16,7 @@ lock_client::lock_client(std::string dst)
   if (cl->bind() < 0) {
     printf("lock_client: call bind\n");
   }
+  
 }
 
 /**

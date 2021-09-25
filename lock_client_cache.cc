@@ -10,9 +10,10 @@
 
 
 lock_client_cache::lock_client_cache(std::string xdst, 
-				     class lock_release_user *_lu)
+				     class lock_release_user * _lu)
   : lock_client(xdst), lu(_lu)
 {
+  // 锁客户端需要新建 rpc 服务端，以处理锁服务端的 revoke 和 retry 请求
   rpcs *rlsrpc = new rpcs(0);
   rlsrpc->reg(rlock_protocol::revoke, this, &lock_client_cache::revoke_handler);
   rlsrpc->reg(rlock_protocol::retry, this, &lock_client_cache::retry_handler);
@@ -30,7 +31,7 @@ lock_protocol::status lock_client_cache::acquire(lock_protocol::lockid_t lid) {
   lock_protocol::status ret = lock_protocol::OK;
   pthread_mutex_lock(&map_mutex);
   auto iter = lockid_lock.find(lid);
-  if(iter== lockid_lock.end()) {
+  if(iter == lockid_lock.end()) {
     iter = lockid_lock.insert({lid, lock()}).first;
   }
   lock &lock = iter->second;
@@ -108,6 +109,8 @@ lock_protocol::status lock_client_cache::release(lock_protocol::lockid_t lid) {
     lock.state = RELEASING; // 当前锁正在被释放
     lock.has_revoked = false;
     pthread_mutex_unlock(&map_mutex); // rpc 请求不应该发生在持有本地锁的时候
+    // 释放锁之前，刷新当前锁对应文件的缓存，其他客户端在获取文件时先获取锁，触发锁的释放，刷新文件，保证分布式系统的文件一致性
+    lu->dorelease(lid);
     ret = cl->call(lock_protocol::release, lid, id, r);
     pthread_mutex_lock(&map_mutex);
 
@@ -146,6 +149,8 @@ rlock_protocol::status lock_client_cache::revoke_handler(
     lock.state = RELEASING; // 当前锁正在被释放
     lock.has_revoked = false;
     pthread_mutex_unlock(&map_mutex); // rpc 请求不应该发生在持有本地锁的时候
+    // 释放锁之前，刷新当前锁对应文件的缓存，其他客户端在获取文件时先获取锁，触发锁的释放，刷新文件，保证分布式系统的文件一致性
+    lu->dorelease(lid);
     ret = cl->call(lock_protocol::release, lid, id, r);
     pthread_mutex_lock(&map_mutex);
 
