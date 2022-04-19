@@ -6,6 +6,8 @@
 #include "lock_server_cache_rsm.h"
 #include "paxos.h"
 #include "rsm.h"
+#include <unistd.h>
+#include "lock_server.h"
 
 #include "jsl_log.h"
 

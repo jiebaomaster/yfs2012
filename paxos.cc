@@ -40,6 +40,9 @@ print_members(const std::vector<std::string> &nodes)
   return s;
 }
 
+/**
+ * 判断 m 是否是 nodes 中的一个元素
+ */
 bool isamember(std::string m, const std::vector<std::string> &nodes)
 {
   for (unsigned i = 0; i < nodes.size(); i++) {
@@ -58,6 +61,12 @@ proposer::isrunning()
 }
 
 // check if the servers in l2 contains a majority of servers in l1
+/**
+ * @brief 判断 l2 中是否包含了大多数的 l1 中所含节点
+ * 
+ * @param l1 全集
+ * @param l2 reply集
+ */
 bool
 proposer::majority(const std::vector<std::string> &l1, 
 		const std::vector<std::string> &l2)
@@ -81,54 +90,73 @@ proposer::proposer(class paxos_change *_cfg, class acceptor *_acceptor,
   my_n.m = me;
 }
 
+/**
+ * 本节点 local:acceptor 收到一次其他节点 other:proposer 的 prepare 之后，
+ * 会递增 last_rnd，如果 local 想在当前 paxos 实例内提出新的提案，应该使用
+ * 的 rnd 是 last_rnd+1，因为只有全局最高 rnd 的提案才有效
+ */ 
 void
 proposer::setn()
 {
   my_n.n = acc->get_n_h().n + 1 > my_n.n + 1 ? acc->get_n_h().n + 1 : my_n.n + 1;
 }
 
-bool
-proposer::run(int instance, std::vector<std::string> cur_nodes, std::string newv)
-{
+/**
+ * @brief 启动一个新的编号为 instance 的 paxos，在当前集群 cur_nodes 中对 newv 达成一致
+ * 
+ * @param instance 实例编号
+ * @param cur_nodes 
+ * @param newv 
+ * @return true 
+ * @return false 
+ */
+bool proposer::run(int instance, std::vector<std::string> cur_nodes,
+                   std::string newv) {
   std::vector<std::string> accepts;
   std::vector<std::string> nodes;
-  std::string v;
+  std::string v; // 本次提案要提交的数据
   bool r = false;
 
   ScopedLock ml(&pxs_mutex);
   tprintf("start: initiate paxos for %s w. i=%d v=%s stable=%d\n",
-	 print_members(cur_nodes).c_str(), instance, newv.c_str(), stable);
+          print_members(cur_nodes).c_str(), instance, newv.c_str(), stable);
   if (!stable) {  // already running proposer?
     tprintf("proposer::run: already running\n");
     return false;
   }
   stable = false;
-  setn();
+  setn(); // 设置 rnd
   accepts.clear();
   v.clear();
+  // 进行一次提案，phase1 通知其他节点，准备进行修改
   if (prepare(instance, accepts, cur_nodes, v)) {
-
+    // 如果收到多数节点的应答，继续 phase2
     if (majority(cur_nodes, accepts)) {
       tprintf("paxos::manager: received a majority of prepare responses\n");
-
-      if (v.size() == 0)
-	v = newv;
+      
+      /**
+       * 只有在本轮提案过程中没有已经被接受的其他提案时，
+       * 才请求提交自己的提案值
+       * 否则使用已接受的提案值，相当于执行一次已接受提案值的恢复
+       */
+      if (v.size() == 0) v = newv;
 
       breakpoint1();
 
       nodes = accepts;
       accepts.clear();
+      // phase2 向有回应的节点发送修改内容
       accept(instance, accepts, nodes, v);
-
+      // 如果收到多数节点的应答，对本次修改达成共识
       if (majority(cur_nodes, accepts)) {
-	tprintf("paxos::manager: received a majority of accept responses\n");
+        tprintf("paxos::manager: received a majority of accept responses\n");
 
-	breakpoint2();
-
-	decide(instance, accepts, v);
-	r = true;
+        breakpoint2();
+        // phase3 在已应答的节点上触发实际修改
+        decide(instance, accepts, v);
+        r = true;
       } else {
-	tprintf("paxos::manager: no majority of accept responses\n");
+        tprintf("paxos::manager: no majority of accept responses\n");
       }
     } else {
       tprintf("paxos::manager: no majority of prepare responses\n");
@@ -153,7 +181,51 @@ proposer::prepare(unsigned instance, std::vector<std::string> &accepts,
   // You fill this in for Lab 6
   // Note: if got an "oldinstance" reply, commit the instance using
   // acc->commit(...), and return false.
-  return false;
+  paxos_protocol::preparearg a = {// 请求体
+    .instance = instance, // 本次实例编号
+    .n = my_n // rnd
+  };
+  paxos_protocol::prepareres r;  // 返回体
+  int ret = 0;
+  prop_t n_max = {.n = 0};
+
+  for (const auto &n : nodes) {
+    // 1. 向 nodes 请求 acceptor::preparereq
+    handle h(n);
+    pthread_mutex_unlock(&pxs_mutex);
+    auto cl = h.safebind();
+    if(cl)
+      ret = cl->call(paxos_protocol::preparereq, me, a, r, rpcc::to(1000));
+    pthread_mutex_lock(&pxs_mutex);
+    if(cl) {
+      if (ret == paxos_protocol::OK) {
+        // 本次请求被 accptor 判断为已过期，直接用已达成共识的值更新本地视图
+        if (r.oldinstance) { 
+          acc->commit(instance, r.v_a);
+          return false;
+        }
+        // 2. 在 accepts 中统计实际完成准备的节点
+        if (r.accept) {
+          accepts.push_back(n);
+          /**
+           * 在 prepare 阶段发现本次投票已经存在 accepted 的提案了
+           * 
+           * 如果已经有节点在本次 paxos 实例中接受了值 v1，
+           * 已接受的值不能被改变，则应放弃当前提案的值，
+           * 转而提案已经接受的值 v1
+           * 这时实际上可以认为X执行了一次(不知是否已经中断的)其他Proposer的修复
+           * 
+           * X将看到的最大vrnd对应的v作为X的phase-2将要写入的值
+           */
+          if (r.n_a.n > n_max.n) {
+            v = r.v_a;
+            n_max = r.n_a;
+          }
+        }
+      }
+    }
+  }
+  return true;
 }
 
 // run() calls this to send out accept RPCs to accepts.
@@ -163,6 +235,31 @@ proposer::accept(unsigned instance, std::vector<std::string> &accepts,
         std::vector<std::string> nodes, std::string v)
 {
   // You fill this in for Lab 6
+  paxos_protocol::acceptarg a = { // 请求体
+    .instance = instance, // 本次实例编号
+    .n = my_n, // rnd
+    .v = v // 本次实例请求接受的值，可以是本节点提案值或者已接受值的恢复
+  };
+  bool r;
+  int ret = 0;
+
+  for (const auto &n : nodes) {
+    // 1. 向 nodes 请求 acceptor::acceptreq
+    handle h(n);
+    VERIFY(pthread_mutex_unlock(&pxs_mutex) == 0);
+    auto cl = h.safebind();
+    if(cl) 
+      ret = cl->call(paxos_protocol::acceptreq, me, a, r, rpcc::to(1000));
+    VERIFY(pthread_mutex_lock(&pxs_mutex) == 0);
+    // 2. 在 accepts 中统计实际达成共识的节点
+    if(cl) {
+      if (ret == paxos_protocol::OK) {
+        if (r) {
+          accepts.push_back(n);
+        }
+      }
+    }
+  }
 }
 
 void
@@ -170,6 +267,21 @@ proposer::decide(unsigned instance, std::vector<std::string> accepts,
 	      std::string v)
 {
   // You fill this in for Lab 6
+  // rpc call acceptor::decidereq to accepts
+  paxos_protocol::decidearg a = {
+    .instance = instance, // 本次达成共识的实例编号
+    .v = v // 已达成共识的提案值
+  };
+  int r;
+
+  for (const auto &n : accepts) {
+    // 向 nodes 请求 acceptor::decidereq
+    handle h(n);
+    VERIFY(pthread_mutex_unlock(&pxs_mutex) == 0);
+    auto cl = h.safebind();
+    auto res = cl->call(paxos_protocol::decidereq, me, a, r, rpcc::to(1000));
+    VERIFY(pthread_mutex_lock(&pxs_mutex) == 0);
+  }
 }
 
 acceptor::acceptor(class paxos_change *_cfg, bool _first, std::string _me, 
@@ -205,8 +317,31 @@ acceptor::preparereq(std::string src, paxos_protocol::preparearg a,
   // You fill this in for Lab 6
   // Remember to initialize *BOTH* r.accept and r.oldinstance appropriately.
   // Remember to *log* the proposal if the proposal is accepted.
-  return paxos_protocol::OK;
+  ScopedLock ml(&pxs_mutex);
 
+  if (instance_h >= a.instance) {
+    // 收到一个已经过期的 paxos 实例，
+    // 已经决策完毕，直接返回最新的决策结果 v_a
+    r.oldinstance = true;
+    r.accept = false;
+    r.v_a = v_a;
+  } else if(a.n > n_h) { 
+    // 正在进行的 paxos 实例
+    // 准备接受更高的 round
+    n_h = a.n; // 记录最新的提案轮次 last_rnd
+    r.oldinstance = false;
+    r.accept = true;
+    r.n_a = n_a;
+    r.v_a = v_a;
+    l->logprop(n_h);
+  } else {
+    // 正在进行的 paxos 实例
+    // 收到一个比 last_rnd 轮次更低的提案，拒绝
+    r.accept = false;
+    r.oldinstance = false;
+  }
+
+  return paxos_protocol::OK;
 }
 
 // the src argument is only for debug purpose
@@ -215,6 +350,19 @@ acceptor::acceptreq(std::string src, paxos_protocol::acceptarg a, bool &r)
 {
   // You fill this in for Lab 6
   // Remember to *log* the accept if the proposal is accepted.
+  ScopedLock ml(&pxs_mutex);
+
+  if(a.n >= n_h) {
+    // 收到一个等于 last_rnd 的写入请求
+    // 接受写入
+    n_a = a.n;
+    v_a = a.v;
+    r = true;
+    l->logaccept(n_a, v_a);
+  } else {
+    // 拒绝轮次低于 last_rnd 的写入请求
+    r = false;
+  }
 
   return paxos_protocol::OK;
 }
@@ -227,9 +375,10 @@ acceptor::decidereq(std::string src, paxos_protocol::decidearg a, int &r)
   tprintf("decidereq for accepted instance %d (my instance %d) v=%s\n", 
 	 a.instance, instance_h, v_a.c_str());
   if (a.instance == instance_h + 1) {
-    VERIFY(v_a == a.v);
+    // 新版本的更新请求，提交最新的 v
+    VERIFY(v_a == a.v); // 本地已接受的 v 和 请求更新的 v 应该要一致
     commit_wo(a.instance, v_a);
-  } else if (a.instance <= instance_h) {
+  } else if (a.instance <= instance_h) { // 更老版本的更新请求，忽略
     // we are ahead ignore.
   } else {
     // we are behind
@@ -248,6 +397,7 @@ acceptor::commit_wo(unsigned instance, std::string value)
     values[instance] = value;
     l->loginstance(instance, value);
     instance_h = instance;
+    // 重置 last_rnd=0 和 {v, vrnd}={0,0}
     n_h.n = 0;
     n_h.m = me;
     n_a.n = 0;

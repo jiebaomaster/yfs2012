@@ -3,9 +3,9 @@
 
 #include "rpc.h"
 
-struct prop_t {
-  unsigned n;
-  std::string m;
+struct prop_t { // 提案编号 round
+  unsigned n; // 递增编号，区分提案先后
+  std::string m; // 节点标志，区分节点
 };
 
 class paxos_protocol {
@@ -27,6 +27,7 @@ class paxos_protocol {
   struct prepareres {
     bool oldinstance;
     bool accept;
+    // {v, vrnd}
     prop_t n_a;
     std::string v_a;
   };
