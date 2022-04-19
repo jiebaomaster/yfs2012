@@ -89,6 +89,7 @@ config::get_view(unsigned instance)
 }
 
 // caller should hold cfg_mutex
+// 获取 instance 达成的共识视图
 std::vector<std::string>
 config::get_view_wo(unsigned instance)
 {
@@ -109,6 +110,9 @@ config::members(std::string value)
   return view;
 }
 
+/**
+ * @brief 将集群数组序列化
+ */
 std::string
 config::value(std::vector<std::string> m)
 {
@@ -162,6 +166,7 @@ config::paxos_commit(unsigned instance, std::string value)
   }
 }
 
+// 判断 m 是否是 vid 实例协商完成的视图节点中的一员
 bool
 config::ismember(std::string m, unsigned vid)
 {
@@ -184,9 +189,11 @@ config::add(std::string new_m, unsigned vid)
   m = mems;
   m.push_back(new_m);
   curm = mems;
+  // 将集群数组序列化
   std::string v = value(m);
   int nextvid = myvid + 1;
   VERIFY(pthread_mutex_unlock(&cfg_mutex)==0);
+  // 触发 paxos 同步 
   bool r = pro->run(nextvid, curm, v);
   VERIFY(pthread_mutex_lock(&cfg_mutex)==0);
   if (r) {

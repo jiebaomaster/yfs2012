@@ -10,7 +10,7 @@
 #include "rpc.h"
 #include <arpa/inet.h>
 #include "config.h"
-
+#include <unistd.h>
 
 class rsm : public config_view_change {
  protected:
