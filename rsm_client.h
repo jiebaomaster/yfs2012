@@ -5,7 +5,7 @@
 #include "rsm_protocol.h"
 #include <string>
 #include <vector>
-
+#include <unistd.h>
 
 //
 // rsm client interface.
@@ -18,8 +18,8 @@
 class rsm_client {
 
  protected:
-  std::string primary;
-  std::vector<std::string> known_mems;
+  std::string primary; // 本地所知的主节点
+  std::vector<std::string> known_mems; // 本地所知的 集群视图
   pthread_mutex_t rsm_client_mutex;
   void primary_failure();
   bool init_members();

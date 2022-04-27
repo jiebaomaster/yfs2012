@@ -73,6 +73,7 @@ config::config(std::string _first, std::string _me, config_view_change *_vc)
   }
 }
 
+// 写日志
 void
 config::restore(std::string s)
 {
@@ -98,6 +99,7 @@ config::get_view_wo(unsigned instance)
   return members(value);
 }
 
+// 将视图字符串反序列化
 std::vector<std::string>
 config::members(std::string value)
 {
@@ -187,6 +189,7 @@ config::add(std::string new_m, unsigned vid)
     return false;
   tprintf("config::add %s\n", new_m.c_str());
   m = mems;
+  // 在当前集群中添加新节点
   m.push_back(new_m);
   curm = mems;
   // 将集群数组序列化

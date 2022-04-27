@@ -105,10 +105,8 @@ proposer::setn()
  * @brief 启动一个新的编号为 instance 的 paxos，在当前集群 cur_nodes 中对 newv 达成一致
  * 
  * @param instance 实例编号
- * @param cur_nodes 
- * @param newv 
- * @return true 
- * @return false 
+ * @param cur_nodes 当前视图
+ * @param newv 需要达成一致的 新视图
  */
 bool proposer::run(int instance, std::vector<std::string> cur_nodes,
                    std::string newv) {
@@ -298,6 +296,7 @@ acceptor::acceptor(class paxos_change *_cfg, bool _first, std::string _me,
 
   l = new log (this, me);
 
+  // 本节点是集群中的第一个节点
   if (instance_h == 0 && _first) {
     values[1] = _value;
     l->loginstance(1, _value);

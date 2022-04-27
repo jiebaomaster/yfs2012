@@ -22,7 +22,7 @@ class lock_release_user {
 class lock_client_cache : public lock_client {
   enum lock_state { NONE, FREE, LOCKED, ACQUIRING, RELEASING };
   struct lock { // 锁
-    bool has_revoked;  // 是否收到锁释放请求，若已经收到，则在下一次释放锁的时候需要请求锁服务释放锁
+    bool has_revoked;  // 是否收到锁释放请求，若已经收到，则在下一次释放锁的时候需要请求锁服务释放锁
     bool retry;
     lock_state state;
     pthread_cond_t wait_queue;  // 客户端已有其他线程占有锁，等待其他线程释放锁

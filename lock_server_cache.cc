@@ -17,7 +17,7 @@ lock_server_cache::lock_server_cache()
 }
 
 /**
- * @brief 获取 id 为 lid 的锁
+ * @brief 获取 id 为 lid 的锁
  * 
  * @param lid 请求的锁的 id
  * @param id 客户端标识 host:port

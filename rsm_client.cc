@@ -30,6 +30,13 @@ rsm_client::primary_failure()
   // You fill this in for Lab 7
 }
 
+/**
+ * @brief 向集群的主节点发请求
+ * 
+ * @param proc 
+ * @param req 
+ * @param rep 
+ */
 rsm_protocol::status
 rsm_client::invoke(int proc, std::string req, std::string &rep)
 {
@@ -61,6 +68,9 @@ rsm_client::invoke(int proc, std::string req, std::string &rep)
       sleep(3);
       continue;
     }
+    // 本次请求发给了非主节点，即本地 primary 失效了，需要拉取新的 集群视图
+    // 因为选主只需要大多数节点的回复，所以本节点可能不知道重新选主了
+    // 而原先的 primary 返回他不是主节点了，则他肯定知道最新的集群视图
     if (ret == rsm_client_protocol::NOTPRIMARY) {
       printf("primary %s isn't the primary--let's get a complete list of mems\n", 
              primary.c_str());
@@ -75,12 +85,15 @@ prim_fail:
   return ret;
 }
 
+/**
+ * @brief 从当前 primary 节点拉取最新的 集群视图
+ */
 bool
 rsm_client::init_members()
 {
   printf("rsm_client::init_members get members!\n");
   handle h(primary);
-  std::vector<std::string> new_view;
+  std::vector<std::string> new_view; // 拉取的新集群视图
   VERIFY(pthread_mutex_unlock(&rsm_client_mutex)==0);
   int ret;
   rpcc *cl = h.safebind();
@@ -95,8 +108,8 @@ rsm_client::init_members()
     printf("rsm_client::init_members do not know any members!\n");
     VERIFY(0);
   }
-  known_mems = new_view;
-  primary = known_mems.back();
+  known_mems = new_view; // 更新视图
+  primary = known_mems.back(); // 更新主节点
   known_mems.pop_back();
 
   printf("rsm_client::init_members: primary %s\n", primary.c_str());

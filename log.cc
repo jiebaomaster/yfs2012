@@ -57,6 +57,7 @@ log::logread(void)
   from.close();
 }
 
+// 导出日志
 std::string 
 log::dump()
 {

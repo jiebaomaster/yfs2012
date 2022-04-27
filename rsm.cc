@@ -6,6 +6,12 @@
 // the primary stamps them and replies with an OK to the primary. The
 // primary executes the request after it receives OKs from all backups,
 // and sends the reply back to the client.
+/**
+ * 具有一个主节点和多个从节点的复制状态机实现。主服务器接收请求，按接收顺序为每个请求
+ * 分配一个视图戳（一个 vid 和一个序列号），并将请求转发给所有从节点。从节点会按照主
+ * 节点标记请求的顺序执行请求，并依次向主服务器回复 OK。主节点从所有从节点接收到 OK 
+ * 之后执行请求，并将回复发送回客户端。
+ */
 //
 // The config module will tell the RSM about a new view. If the
 // primary in the previous view is a member of the new view, then it
@@ -15,6 +21,14 @@
 // module constructs the sequence of views for the RSM and the RSM
 // ensures there will be always one primary, who was a member of the
 // last view.
+/**
+ * 新的视图会通过 config 模块通知 RSM。
+ * 如果前一个视图的主节点也在新的视图中，主节点不变；否则，前一个视图中编号最小的
+ * 节点将成为新的主节点。在任何一种情况下，新的主节点都是上一个视图中的节点，这是
+ * 因为新加入的节点需要同步信息，要避免成为主节点。
+ * config 模块为 RSM 构建了一系列的视图，而 RSM 保证一定会有一个主节点，且这个
+ * 主节点是最新视图中的节点。
+ */
 //
 // When a new node starts, the recovery thread is in charge of joining
 // the RSM.  It will collect the internal RSM state from the primary;
@@ -22,6 +36,11 @@
 // to the joining the internal RSM state (e.g., paxos log). Since
 // there is only one primary, all joins happen in well-defined total
 // order.
+/**
+ * 当新节点启动时，会创建一个 recovery 线程，并由他负责加入 RSM 的过程。将从主节点
+ * 拉取内部 RSM 状态；向主节点 RPC join，主节点启动一个 paxos 在当前视图下对新节点
+ * 的加入达成共识。因为只有一个主节点，所以所有 join 请求都以定义良好的总顺序发生。
+ */
 //
 // The recovery thread also runs during a view change (e.g, when a node
 // has failed).  After a failure some of the backups could have
@@ -37,6 +56,15 @@
 // resulting from processing all acknowledged client requests.
 // Therefore, if the nodes sync up before processing the next request,
 // the next view will have the correct state.
+/**
+ * recovery 线程也会在视图更改期间运行（例如，当节点出现故障时）。发生失败后，一些从节点
+ * 可能已经处理了主服务器没有处理的请求，但这些结果对客户端不可见（因为主服务器有响应）。
+ * 如果上一个视图的主节点在当前视图中，则主节点不变，并且其状态是正确的，从节点下载主节点
+ * 的当前状态（将主节点状态同步到所有从节点，状态回滚）。一旦 RSM 完成同步，主服务器将再次
+ * 接受来自客户端的请求。如果主节点发生了变动，则从新的主节点同步状态。在任何一种情况下，
+ * 都会有一个节点成为主节点，该节点具有所有已确认的客户端请求所产生的状态。因此，如果集群在
+ * 处理下一个请求之前完成同步，下一个视图将具有正确的状态。
+ */
 //
 // While the RSM in a view change (i.e., a node has failed, a new view
 // has been formed, but the sync hasn't completed), another failure
@@ -56,6 +84,17 @@
 // the sync fails, the node may start another member list change
 // (inviewchange = true and insync = false).
 //
+/**
+ * 当 RSM 正在视图更改时（即节点发生故障，新视图已形成，但同步尚未完成），可能会发生另一个故障，
+ * 从而使视图更改复杂化。同步期间，主节点或主节点可能会超时，并启动另一轮 Paxos。RSM 使用
+ * 两个变量来跟踪其状态：
+ *  - inviewchange：节点出现故障，RSM 正在执行视图更改
+ *  - insync：当前节点正在同步状态
+ * 如果主节点的 inviewchange 为 false，则它可以处理客户端请求；否则，客户端会被告知稍后重试。
+ * 在 inviewchange 为 true 时，RSM 可能会逐个经历几次成员列表的更改。成员列表更改完成后，
+ * 集群将尝试进行同步。如果同步完成，则视图更改完成（inviewchange 设置为 false）。如果同步失败，
+ * 节点可能会启动另一次成员列表更改（inviewchange=true 和 insync=false）。
+ */
 // The implementation should be used only with servers that run all
 // requests run to completion; in particular, a request shouldn't
 // block.  If a request blocks, the backup won't respond to the
@@ -65,6 +104,13 @@
 // response or execute after the response, because it is not
 // guaranteed that all backup will receive the same response and
 // execute in the same order.
+/**
+ * 该实现应仅用于运行所有请求直至完成的服务器；特别是，请求不应该被阻塞。
+ * 如果请求被阻塞，从节点将不会响应主节点，主节点上也不会执行请求。
+ * 从节点在处理请求时可以向另一个节点发送 RPC，但此 RPC 只能是单向通知；
+ * 从节点不应基于 RPC 响应执行任何操作或在响应后执行处理，因为不能保证所有从节点
+ * 都会收到相同的响应并以相同的顺序执行。
+ */
 //
 // The implementation can be viewed as a layered system:
 //       RSM module     ---- in charge of replication
@@ -77,6 +123,16 @@
 // will invoke an upcall to inform higher layers of the new value.
 // The rule is that a module releases its internal locks before it
 // upcalls, but can keep its locks when calling down.
+/**
+ * 此种实现可以看作是一个分层的系统：
+ *   RSM 模块     --- 管理复制集 
+ *   config 模块  --- 负责视图管理
+ *   Paxos 模块   --- 负责运行 Paxos 对某个值达成共识
+ * 
+ * 每个模块都有线程和内部锁。此外，线程可能跨越多层调用，例如，运行Paxos的proposer。
+ * 当 Paxos 的 acceptor 接受一个实例的新值时，一个线程将进行向上调用来通知更高的层这个新值。
+ * 规则是，模块在向上调用之前释放其内部锁，但在向下调用时可以保留其锁。
+ */ 
 
 #include <fstream>
 #include <iostream>
@@ -131,6 +187,9 @@ rsm::rsm(std::string _first, std::string _me)
   testsvr->reg(rsm_test_protocol::net_repair, this, &rsm::test_net_repairreq);
   testsvr->reg(rsm_test_protocol::breakpoint, this, &rsm::breakpointreq);
 
+  /**
+   * 实例化rsm服务端后，创建一个线程，从主服务同步状态
+   */
   {
       ScopedLock ml(&rsm_mutex);
       VERIFY(pthread_create(&th, NULL, &recoverythread, (void *) this) == 0);
@@ -152,14 +211,15 @@ rsm::recovery()
   ScopedLock ml(&rsm_mutex);
 
   while (1) {
+    // 如果当前节点还不在 视图 中，通过 config 将当前节点加入视图
     while (!cfg->ismember(cfg->myaddr(), vid_commit)) {
       if (join(primary)) {
-	tprintf("recovery: joined\n");
+        tprintf("recovery: joined\n");
         commit_change_wo(cfg->vid());
       } else {
-	VERIFY(pthread_mutex_unlock(&rsm_mutex)==0);
-	sleep (5); // XXX make another node in cfg primary?
-	VERIFY(pthread_mutex_lock(&rsm_mutex)==0);
+        VERIFY(pthread_mutex_unlock(&rsm_mutex) == 0);
+        sleep(5);  // XXX make another node in cfg primary?
+        VERIFY(pthread_mutex_lock(&rsm_mutex) == 0);
       }
     }
     vid_insync = vid_commit;
@@ -182,6 +242,7 @@ rsm::recovery()
       inviewchange = false;
     }
     tprintf("recovery: go to sleep %d %d\n", insync, inviewchange);
+    // 执行一次数据恢复之后，睡眠，等待下次需要恢复的时机
     pthread_cond_wait(&recovery_cond, &rsm_mutex);
   }
 }
@@ -336,7 +397,7 @@ rsm::execute(int procno, std::string req, std::string &r)
   r = rep1.str();
 }
 
-//
+// 对集群的所有操作都通过主节点执行，主节点转发操作给从节点
 // Clients call client_invoke to invoke a procedure on the replicated state
 // machine: the primary receives the request, assigns it a sequence
 // number, and invokes it on all members of the replicated state
@@ -406,6 +467,7 @@ rsm::transferdonereq(std::string m, unsigned vid, int &)
 // a node that wants to join an RSM as a server sends a
 // joinreq to the RSM's current primary; this is the
 // handler for that RPC.
+// 主节点处理新节点的添加
 rsm_protocol::status
 rsm::joinreq(std::string m, viewstamp last, rsm_protocol::joinres &r)
 {
@@ -414,10 +476,10 @@ rsm::joinreq(std::string m, viewstamp last, rsm_protocol::joinres &r)
   ScopedLock ml(&rsm_mutex);
   tprintf("joinreq: src %s last (%d,%d) mylast (%d,%d)\n", m.c_str(), 
 	 last.vid, last.seqno, last_myvs.vid, last_myvs.seqno);
-  if (cfg->ismember(m, vid_commit)) {
+  if (cfg->ismember(m, vid_commit)) { // 已经在当前视图中了，不用处理
     tprintf("joinreq: is still a member\n");
     r.log = cfg->dump();
-  } else if (cfg->myaddr() != primary) {
+  } else if (cfg->myaddr() != primary) { // 本节点已经不是主节点了，拒绝
     tprintf("joinreq: busy\n");
     ret = rsm_protocol::BUSY;
   } else {
@@ -427,7 +489,7 @@ rsm::joinreq(std::string m, viewstamp last, rsm_protocol::joinres &r)
     VERIFY (pthread_mutex_unlock(&rsm_mutex) == 0);
     bool succ = cfg->add(m, vid_cache);
     VERIFY (pthread_mutex_lock(&rsm_mutex) == 0);
-    if (cfg->ismember(m, cfg->vid())) {
+    if (cfg->ismember(m, cfg->vid())) { // 加入成功
       r.log = cfg->dump();
       tprintf("joinreq: ret %d log %s\n:", ret, r.log.c_str());
     } else {
@@ -449,7 +511,7 @@ rsm::client_members(int i, std::vector<std::string> &r)
   std::vector<std::string> m;
   ScopedLock ml(&rsm_mutex);
   m = cfg->get_view(vid_commit);
-  m.push_back(primary);
+  m.push_back(primary); // primary 单独放在视图最后返回
   r = m;
   tprintf("rsm::client_members return %s m %s\n", print_members(m).c_str(),
 	 primary.c_str());

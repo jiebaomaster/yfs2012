@@ -24,9 +24,9 @@ class rsm : public config_view_change {
   // On primary: viewstamp for the next request from rsm_client
   viewstamp myvs;
   viewstamp last_myvs;   // Viewstamp of the last executed request
-  std::string primary;
-  bool insync; 
-  bool inviewchange;
+  std::string primary; // 当前集群的主节点
+  bool insync; // 当前节点正在同步状态
+  bool inviewchange; // 节点出现故障，RSM 正在执行视图更改
   unsigned vid_commit;  // Latest view id that is known to rsm layer
   unsigned vid_insync;  // The view id that this node is synchronizing for
   std::vector<std::string> backups;   // A list of unsynchronized backups
