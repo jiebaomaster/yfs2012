@@ -31,7 +31,7 @@ rsm_client::primary_failure()
 }
 
 /**
- * @brief 向集群的主节点发请求
+ * @brief 向集群的主节点发请求，重复尝试，直到请求成功
  * 
  * @param proc 
  * @param req 
@@ -63,6 +63,7 @@ rsm_client::invoke(int proc, std::string req, std::string &rep)
     if (ret == rsm_client_protocol::OK) {
       break;
     }
+    // RSM 集群正在同步，过段时间再次请求
     if (ret == rsm_client_protocol::BUSY) {
       printf("rsm is busy %s\n", primary.c_str());
       sleep(3);

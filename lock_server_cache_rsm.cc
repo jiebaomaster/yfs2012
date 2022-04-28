@@ -50,7 +50,9 @@ lock_server_cache_rsm::revoker()
   map<lock_protocol::lockid_t, lock>::iterator iter;
   while(1) {
     revoking_locks.deq(&iter);
-
+    // 只有 master 才需要给客户端发送 RPC
+    if(!rsm->amiprimary()) continue;
+    
     pthread_mutex_lock(&map_mutex);
     auto &lock = iter->second;
     auto h = handle(lock.owner);
@@ -73,10 +75,11 @@ lock_server_cache_rsm::retryer()
   map<lock_protocol::lockid_t, lock>::iterator iter;
   while (1) {
     retring_locks.deq(&iter);
+    // 只有 master 才需要给客户端发送 RPC
+    if(!rsm->amiprimary()) continue;
 
     pthread_mutex_lock(&map_mutex);
     auto &lock = iter->second;
-    lock.owner = "";
     string client_need_retry = *lock.waiters.begin();  // 需要发送重试请求的客户端
     auto h = handle(client_need_retry);
     pthread_mutex_unlock(&map_mutex);

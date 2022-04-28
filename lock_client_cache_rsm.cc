@@ -42,6 +42,8 @@ lock_client_cache_rsm::lock_client_cache_rsm(std::string xdst,
   // You fill this in Step Two, Lab 7
   // - Create rsmc, and use the object to do RPC 
   //   calls instead of the rpcc object of lock_client
+  // rpc 代理，通过 rsmc 发送的请求会被 rsm master 接收
+  rsmc = new rsm_client(xdst);
   pthread_mutex_init(&map_mutex, NULL);
   pthread_t th;
   int r = pthread_create(&th, NULL, &releasethread, (void *) this);
@@ -72,7 +74,7 @@ lock_client_cache_rsm::releaser()
     // 释放锁之前，刷新当前锁对应文件的缓存，其他客户端在获取文件时先获取锁，触发锁的释放，刷新文件，保证分布式系统的文件一致性
     if(lu)
       lu->dorelease(lock.lid);
-    ret = cl->call(lock_protocol::release, lock.lid, id, t_xid, r);
+    ret = rsmc->call(lock_protocol::release, lock.lid, id, t_xid, r);
     
     pthread_mutex_lock(&map_mutex);
 
@@ -105,7 +107,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
         lock.retry = false;
         t_xid = nextXid();
         pthread_mutex_unlock(&map_mutex);
-        ret = cl->call(lock_protocol::acquire, lid, id, t_xid, r);
+        ret = rsmc->call(lock_protocol::acquire, lid, id, t_xid, r);
         pthread_mutex_lock(&map_mutex);
         if (ret == lock_protocol::OK) {  // 成功从锁服务获取到锁
 
@@ -131,7 +133,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
           lock.retry = false;
           t_xid = nextXid();
           pthread_mutex_unlock(&map_mutex);
-          ret = cl->call(lock_protocol::acquire, lid, id, t_xid, r);
+          ret = rsmc->call(lock_protocol::acquire, lid, id, t_xid, r);
           pthread_mutex_lock(&map_mutex);
           if (ret == lock_protocol::OK) {
             lock.state = LOCKED;

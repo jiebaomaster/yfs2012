@@ -40,7 +40,7 @@ class config : public paxos_change {
   config(std::string _first, std::string _me, config_view_change *_vc);
   unsigned vid() { return myvid; }
   std::string myaddr() { return me; };
-  // 到处 acceptor 的日志
+  // 导出 acceptor 的日志
   std::string dump() { return acc->dump(); };
   std::vector<std::string> get_view(unsigned instance);
   void restore(std::string s);

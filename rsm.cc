@@ -143,6 +143,8 @@
 #include "lang/verify.h"
 #include "rsm_client.h"
 
+using std::string;
+
 static void *
 recoverythread(void *x)
 {
@@ -381,6 +383,14 @@ rsm::commit_change_wo(unsigned vid)
 }
 
 
+/**
+ * @brief 在本地执行对 lock_server_cache_rsm 的请求
+ * 请求在 lock_smain.cc 中通过 rsm.reg 注册到 procs 中
+ * 
+ * @param procno 请求的类型编号
+ * @param req 请求参数
+ * @param r 返回值
+ */
 void
 rsm::execute(int procno, std::string req, std::string &r)
 {
@@ -402,12 +412,52 @@ rsm::execute(int procno, std::string req, std::string &r)
 // machine: the primary receives the request, assigns it a sequence
 // number, and invokes it on all members of the replicated state
 // machine.
-//
+// 处理 rsm_client 发来的调用请求，开启一个 rsm 内的调用过程
 rsm_client_protocol::status
 rsm::client_invoke(int procno, std::string req, std::string &r)
 {
   int ret = rsm_client_protocol::OK;
+  // 整个请求的处理期间都需要持有锁，保持请求的按序执行
+  ScopedLock _l(&invoke_mutex);
   // You fill this in for Lab 7
+  // 正在同步的不能处理客户端请求
+  if(inviewchange) {
+    ret = rsm_client_protocol::BUSY;
+    return ret;
+  }
+  // 非 master 不能处理客户端请求
+  if(cfg->myaddr() != primary) {
+    ret = rsm_client_protocol::NOTPRIMARY;
+    return ret;
+  }
+
+  auto vs = myvs;
+  myvs.seqno++; // 更新序列号
+  auto m = cfg->get_view(vid_commit);
+  int dummy;
+  for(auto &n : m) { // 转发请求给视图中所有 slave
+    if(n == cfg->myaddr()) continue;
+
+    handle h(n);
+    auto cl = h.safebind();
+    if(cl)
+      ret = cl->call(rsm_protocol::invoke, procno, vs, req, dummy, rpcc::to(1000));
+    else {
+      // TODO slave 奔溃，触发视图修改
+      printf("client_invoke slave %s clash!\n", n);
+      ret = rsm_client_protocol::BUSY;
+      return ret;
+    }
+    // rsm 内部错误
+    if(ret == rsm_protocol::ERR) {
+      printf("client_invoke invoke on slave %s error\n", n);
+      ret = rsm_client_protocol::BUSY;
+      return ret;
+    }
+  }
+  // 在 master 执行锁协议调用
+  execute(procno, req, r);
+
   return ret;
 }
 
@@ -417,12 +467,29 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
 //
 // the replica must execute requests in order (with no gaps) 
 // according to requests' seqno 
-
+// 在 rsm 内部，slave 处理 master 发来的调用
 rsm_protocol::status
 rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
 {
   rsm_protocol::status ret = rsm_protocol::OK;
   // You fill this in for Lab 7
+  string r;
+  ScopedLock _l(&invoke_mutex);
+  if(myvs > vs) { // 更小序号的请求已经被处理过了
+    goto out;
+  }
+  if (myvs > vs                       // 请求必须按序到达
+      || inviewchange                 // 正在同步
+      || cfg->myaddr() == primary) {  // slave 才能处理
+    ret = rsm_protocol::ERR;
+    goto out;
+  }
+  // 在本地执行请求
+  execute(proc, req, r);
+  // 更新期望的 viewstamp
+  myvs.seqno++;
+
+out:
   return ret;
 }
 
