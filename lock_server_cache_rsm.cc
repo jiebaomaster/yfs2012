@@ -8,9 +8,11 @@
 #include "lang/verify.h"
 #include "handle.h"
 #include "tprintf.h"
+#include "slock.h"
 
 using std::string;
 using std::map;
+using std::set;
 
 static void *
 revokethread(void *x)
@@ -37,6 +39,7 @@ lock_server_cache_rsm::lock_server_cache_rsm(class rsm *_rsm)
   r = pthread_create(&th, NULL, &retrythread, (void *) this);
   VERIFY (r == 0);
   pthread_mutex_init(&map_mutex, NULL);
+  rsm->set_state_transfer(this);
 }
 
 void
@@ -190,17 +193,61 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
   return ret;
 }
 
+/**
+ * @brief 序列化所锁服务器的锁状态
+ */
 std::string
 lock_server_cache_rsm::marshal_state()
 {
-  std::ostringstream ost;
-  std::string r;
-  return r;
+  ScopedLock _l(&map_mutex);
+
+  marshall state;
+  state << static_cast<unsigned long long>(lockid_lock.size());
+  for (const auto &lockpair : lockid_lock) {
+    const auto &lock = lockpair.second;
+    state << lock.lid << lock.owner << lock.xid << lock.revoked << lock.state;
+    state << static_cast<unsigned long long>(lock.waiters.size());
+    for (auto const &waiter : lock.waiters) {
+      state << waiter;
+    }
+  }
+
+  return state.str();
 }
 
+/**
+ * @brief 反序列化状态，恢复锁服务的状态
+ */
 void
 lock_server_cache_rsm::unmarshal_state(std::string state)
 {
+  unmarshall s(state);
+  unsigned int locksize;
+  s >> locksize;
+  lock_protocol::lockid_t lid;
+  map<lock_protocol::lockid_t, lock> locks;
+  for (unsigned int i = 0; i < locksize; i++) {
+    s >> lid;
+    auto iter = locks.insert({lid, lock(lid)}).first;
+    auto &l = iter->second;
+    int l_state;
+    s >> l.owner >> l.xid >> l.revoked >> l_state;
+    l.state = static_cast<enum lock_state>(l_state);
+    unsigned int waiterSize;
+    string w;
+    set<string> waiters;
+    s >> waiterSize;
+    for (unsigned int j = 0; j < waiterSize; j++) {
+      s >> w;
+      waiters.insert(w);
+    }
+    l.waiters = waiters;
+  }
+  // 先将状态反序列化到临时变量 locks 中，然后获取锁替换 lockid_lock
+  {
+    ScopedLock _l(&map_mutex);
+    lockid_lock = locks;
+  }
 }
 
 lock_protocol::status

@@ -16,7 +16,7 @@ class config : public paxos_change {
   acceptor *acc;
   proposer *pro;
   rpcs *pxsrpc;
-  unsigned myvid;
+  unsigned myvid; // 当前节点所在的 view id
   std::string first;
   std::string me;
   config_view_change *vc;

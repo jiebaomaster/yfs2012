@@ -136,6 +136,7 @@
 
 #include <fstream>
 #include <iostream>
+#include <algorithm>
 
 #include "handle.h"
 #include "rsm.h"
@@ -198,6 +199,9 @@ rsm::rsm(std::string _first, std::string _me)
   }
 }
 
+/**
+ * @brief 在 rsm 中注册 lock_server 的处理函数
+ */
 void
 rsm::reg1(int proc, handler *h)
 {
@@ -219,6 +223,8 @@ rsm::recovery()
         tprintf("recovery: joined\n");
         commit_change_wo(cfg->vid());
       } else {
+        tprintf("recovery: join fail, wait for next turn\n");
+        
         VERIFY(pthread_mutex_unlock(&rsm_mutex) == 0);
         sleep(5);  // XXX make another node in cfg primary?
         VERIFY(pthread_mutex_lock(&rsm_mutex) == 0);
@@ -227,9 +233,9 @@ rsm::recovery()
     vid_insync = vid_commit;
     tprintf("recovery: sync vid_insync %d\n", vid_insync);
     if (primary == cfg->myaddr()) {
-      r = sync_with_backups();
+      r = sync_with_backups(); // master 等待 slave 完成同步
     } else {
-      r = sync_with_primary();
+      r = sync_with_primary(); // slave 从 master 同步数据
     }
     tprintf("recovery: sync done\n");
 
@@ -249,6 +255,9 @@ rsm::recovery()
   }
 }
 
+/**
+ * @brief master 等待 slave 进行状态同步
+ */
 bool
 rsm::sync_with_backups()
 {
@@ -271,11 +280,32 @@ rsm::sync_with_backups()
   // Wait until
   //   - all backups in view vid_insync are synchronized
   //   - or there is a committed viewchange
+  backups = cfg->get_view(vid_insync);
+  // 在 view 删掉 master
+  for(auto iter = backups.begin(); iter != backups.end(); iter++) {
+    if(*iter == cfg->myaddr()) {
+      backups.erase(iter);
+      break;
+    }
+  }
+  // master 开始等待 slave 的同步请求
+  while (!backups.empty()) {
+    if(vid_commit != vid_insync)
+      break;
+    string b;
+    for(auto & bb : backups)
+      b += bb + ';';
+    tprintf("master begin wait for sync, backups: %s\n", b.c_str());
+    pthread_cond_wait(&sync_cond, &rsm_mutex);
+  }
+
   insync = false;
   return true;
 }
 
-
+/**
+ * @brief slave 开始从 master 同步状态
+ */
 bool
 rsm::sync_with_primary()
 {
@@ -284,7 +314,25 @@ rsm::sync_with_primary()
   // You fill this in for Lab 7
   // Keep synchronizing with primary until the synchronization succeeds,
   // or there is a commited viewchange
-  return true;
+  while(1) {
+    if (vid_commit != vid_insync)
+      return false;
+
+    // 同步状态
+    if(!statetransfer(m)) {
+      tprintf("rsm::sync_with_primary statetransfer failure\n");
+      continue;
+    }
+
+    if (vid_commit != vid_insync)
+      return false;
+
+    if(!statetransferdone(m))  {
+      tprintf("rsm::sync_with_primary statetransferdone failure\n");
+      continue;
+    } else 
+      return true;
+  }
 }
 
 
@@ -313,6 +361,7 @@ rsm::statetransfer(std::string m)
 	   (long unsigned) cl, ret);
     return false;
   }
+  // slave 本地处理的 viewstamp 落后于 master，使用同步得到的数据进行恢复
   if (stf && last_myvs != r.last) {
     stf->unmarshal_state(r.state);
   }
@@ -322,10 +371,30 @@ rsm::statetransfer(std::string m)
   return true;
 }
 
+/**
+ * @brief slave 通知 master 完成了数据同步
+ */
 bool
 rsm::statetransferdone(std::string m) {
   // You fill this in for Lab 7
-  // - Inform primary that this slave has synchronized for vid_insync
+  // - Inform primary that this slave has synchronized for vid_insyncde
+  int ret = rsm_protocol::OK;
+  int dummy;
+  handle h(m);
+  tprintf("rsm::statetransferdone %s sync %u done\n", cfg->myaddr().c_str(), vid_insync);
+  VERIFY(pthread_mutex_unlock(&rsm_mutex)==0);
+
+  rpcc* cl = h.safebind();
+  if(cl) {
+    ret = cl->call(rsm_protocol::transferdonereq, cfg->myaddr(), vid_insync, dummy);
+  }
+  VERIFY(pthread_mutex_lock(&rsm_mutex)==0);
+
+  if(cl == 0 || ret != rsm_protocol::OK) {
+    tprintf("statetransferdone: slave [%s] send RPC transferdonereq ERR\n", cfg->myaddr().c_str());
+    return false;
+  }
+  
   return true;
 }
 
@@ -377,6 +446,7 @@ rsm::commit_change_wo(unsigned vid)
   vid_commit = vid;
   inviewchange = true;
   set_primary(vid);
+  // 视图有变动，执行 rsm 状态同步
   pthread_cond_signal(&recovery_cond);
   if (cfg->ismember(cfg->myaddr(), vid_commit))
     breakpoint2();
@@ -432,7 +502,6 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
   }
 
   auto vs = myvs;
-  myvs.seqno++; // 更新序列号
   auto m = cfg->get_view(vid_commit);
   int dummy;
   for(auto &n : m) { // 转发请求给视图中所有 slave
@@ -442,21 +511,23 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
     auto cl = h.safebind();
     if(cl)
       ret = cl->call(rsm_protocol::invoke, procno, vs, req, dummy, rpcc::to(1000));
-    else {
-      // TODO slave 奔溃，触发视图修改
-      printf("client_invoke slave %s clash!\n", n);
-      ret = rsm_client_protocol::BUSY;
-      return ret;
-    }
-    // rsm 内部错误
-    if(ret == rsm_protocol::ERR) {
-      printf("client_invoke invoke on slave %s error\n", n);
+
+    if(!cl || ret != rsm_protocol::OK) {
+      // rsm 内部错误
+      if(ret == rsm_protocol::ERR) {
+        tprintf("client_invoke invoke on slave %s error\n", n.c_str());
+      } else {
+        tprintf("client_invoke invoke failure %s ret: %u \n", n.c_str(), ret);
+      }
       ret = rsm_client_protocol::BUSY;
       return ret;
     }
   }
   // 在 master 执行锁协议调用
   execute(procno, req, r);
+  
+  last_myvs = myvs;  
+  myvs.seqno++; // 更新序列号
 
   return ret;
 }
@@ -478,7 +549,7 @@ rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
   if(myvs > vs) { // 更小序号的请求已经被处理过了
     goto out;
   }
-  if (myvs > vs                       // 请求必须按序到达
+  if (vs > myvs                       // 请求必须按序到达
       || inviewchange                 // 正在同步
       || cfg->myaddr() == primary) {  // slave 才能处理
     ret = rsm_protocol::ERR;
@@ -486,15 +557,21 @@ rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
   }
   // 在本地执行请求
   execute(proc, req, r);
+  
+  last_myvs = myvs;
   // 更新期望的 viewstamp
   myvs.seqno++;
-
 out:
   return ret;
 }
 
 /**
  * RPC handler: Send back the local node's state to the caller
+ * master 发送自身的状态给 slave
+ * 
+ * @param src slave 地址
+ * @param last slave 处理的最后请求 id
+ * @param vid slave 同步时的 view id
  */
 rsm_protocol::status
 rsm::transferreq(std::string src, viewstamp last, unsigned vid, 
@@ -505,9 +582,12 @@ rsm_protocol::transferres &r)
   // Code will be provided in Lab 7
   tprintf("transferreq from %s (%d,%d) vs (%d,%d)\n", src.c_str(), 
 	 last.vid, last.seqno, last_myvs.vid, last_myvs.seqno);
+  // 当前不在同步状态 或 slave 要求的 vid 不是当前 RSM 正在同步的 vid
   if (!insync || vid != vid_insync) {
-     return rsm_protocol::BUSY;
+    tprintf("transferreq from %s failure insync %d, vid %u vs vid_insync %u\n", src.c_str(), insync, vid, vid_insync);
+    return rsm_protocol::BUSY;
   }
+  // slave 的请求处理进度和 master 不同，则要同步
   if (stf && last != last_myvs) 
     r.state = stf->marshal_state();
   r.last = last_myvs;
@@ -517,6 +597,9 @@ rsm_protocol::transferres &r)
 /**
   * RPC handler: Inform the local node (the primary) that node m has synchronized
   * for view vid
+  * master 收到 slave 同步完成的消息
+  * @param m slave 地址
+  * @param vid slave 同步时的 view id
   */
 rsm_protocol::status
 rsm::transferdonereq(std::string m, unsigned vid, int &)
@@ -528,6 +611,38 @@ rsm::transferdonereq(std::string m, unsigned vid, int &)
   //   for the same view with me
   // - Remove the slave from the list of unsynchronized backups
   // - Wake up recovery thread if all backups are synchronized
+  tprintf("rsm::transferdonereq slave %s has synchronized in view[%u] \n", m.c_str(), vid_insync);
+  if(!insync || vid != vid_insync) {
+    tprintf("rsm::transferdonereq failure insync %d, vid %u vs vid_insync %u\n",insync, vid, vid_insync);
+
+    ret = rsm_protocol::BUSY;
+    goto out;  
+  }
+  /**
+   * 在数据同步期间发生了视图更改，放弃本次同步，立即开始新的同步
+   */
+  if(vid_insync != vid_commit) {
+    tprintf("rsm::transferdonereq master get new view[%u->%u] before synchronized\n",vid_insync, vid_commit);
+    pthread_cond_signal(&sync_cond);
+    ret = rsm_protocol::BUSY;
+    goto out;
+  }
+
+  // 移除已完成同步的备份
+  for(auto iter = backups.begin(); iter !=  backups.end(); iter++) {
+    if(*iter == m) {
+      backups.erase(iter);
+      break;
+    }
+  }
+  
+  // 所有 slave 都完成备份了，唤醒 recovery 线程，master 开始提供服务
+  if(backups.empty()) {
+    tprintf("rsm::transferdonereq master view[%u] synchronized\n", vid_insync);
+    pthread_cond_signal(&sync_cond);
+  }
+
+out:
   return ret;
 }
 

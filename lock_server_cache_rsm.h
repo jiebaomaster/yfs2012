@@ -41,8 +41,12 @@ class lock_server_cache_rsm : public rsm_state_transfer {
   lock_protocol::status stat(lock_protocol::lockid_t, int &);
   void revoker();
   void retryer();
-  std::string marshal_state();
-  void unmarshal_state(std::string state);
+
+  /* 序列化和反序列化锁服务器的状态 */
+  std::string marshal_state() override;
+  void unmarshal_state(std::string state) override;
+
+  /* 锁服务的 RPC 请求处理函数 */
   int acquire(lock_protocol::lockid_t, std::string id, 
 	      lock_protocol::xid_t, int &);
   int release(lock_protocol::lockid_t, std::string id, lock_protocol::xid_t,

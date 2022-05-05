@@ -51,32 +51,36 @@ class rsm_client {
 template<class R> int
 rsm_client::call_m(unsigned int proc, marshall &req, R &r)
 {
-	std::string rep;
-        std::string res;
-	int intret = invoke(proc, req.str(), rep);
-        VERIFY( intret == rsm_client_protocol::OK );
-        unmarshall u(rep);
-	u >> intret;
-	if (intret < 0) return intret;
-        u >> res;
-        if (!u.okdone()) {
-                fprintf(stderr, "rsm_client::call_m: failed to unmarshall the reply.\n"
-                       "You probably forgot to set the reply string in "
-                       "rsm::client_invoke, or you may call RPC 0x%x with wrong return "
-                       "type\n", proc);
-                VERIFY(0);
-		return rpc_const::unmarshal_reply_failure;
-        }
-        unmarshall u1(res);
-        u1 >> r;
-	if(!u1.okdone()) {
-                fprintf(stderr, "rsm_client::call_m: failed to unmarshall the reply.\n"
-                       "You are probably calling RPC 0x%x with wrong return "
-                       "type.\n", proc);
-                VERIFY(0);
-		return rpc_const::unmarshal_reply_failure;
-        }
-	return intret;
+  std::string rep;
+  std::string res;
+  int intret = invoke(proc, req.str(), rep);
+  VERIFY(intret == rsm_client_protocol::OK);
+  unmarshall u(rep); // 解码锁协议调用的实际返回值
+  u >> intret;
+  if (intret < 0) return intret;
+  u >> res;
+  if (!u.okdone()) {
+    fprintf(stderr,
+            "rsm_client::call_m: failed to unmarshall the reply.\n"
+            "You probably forgot to set the reply string in "
+            "rsm::client_invoke, or you may call RPC 0x%x with wrong return "
+            "type\n",
+            proc);
+    VERIFY(0);
+    return rpc_const::unmarshal_reply_failure;
+  }
+  unmarshall u1(res);
+  u1 >> r;
+  if (!u1.okdone()) {
+    fprintf(stderr,
+            "rsm_client::call_m: failed to unmarshall the reply.\n"
+            "You are probably calling RPC 0x%x with wrong return "
+            "type.\n",
+            proc);
+    VERIFY(0);
+    return rpc_const::unmarshal_reply_failure;
+  }
+  return intret;
 }
 
 template<class R, class A1> int

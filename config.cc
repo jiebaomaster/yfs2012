@@ -25,6 +25,17 @@
 // next view.  The Paxos log contains all the values (i.e., views)
 // agreed on.
 //
+/**
+ * config 模块维护视图。当节点加入或离开视图时，视图中只是添加或删除新节点。
+ * 第一个视图仅包含节点 1。如果节点 2 在第一个节点之后加入，它将从节点 1 下载视图，
+ * 从而知道视图 1 中只包含唯一的成员节点 1 。然后节点 2 将调用 Paxos 来创建下一个视图，
+ * 它使用 Paxos 要求视图 1 中的节点就值 {1，2} 达成一致。如果 Paxos 返回 success，
+ * 那么它将移动到以 {1,2} 为成员的视图 2。当节点 3 加入时，config 模块使用 Paxos，
+ * 在视图 2 中的所有节点就新的值{ 1,2,3} 达成一致。等等。
+ * 当一个节点发现当前视图的某个节点没有响应时，它会启动 Paxos 来提出一个新值（当前视图
+ * 减去没有响应的节点）。config 模块使用 Paxos 创建视图的总顺序，并确保前一个视图的
+ * 大部分节点对下一个视图达成一致。Paxos 日志包含所有商定的值（即视图）。
+ */
 // The RSM module informs config to add nodes. The config module
 // runs a heartbeater thread that checks in with nodes.  If a node
 // doesn't respond, the config module will invoke Paxos's proposer to
@@ -32,12 +43,22 @@
 // Paxos acceptor accepts the new proposed value through
 // paxos_commit().
 //
+/**
+ * RSM 模块通知 config 添加节点。config 模块运行一个 heartbeater 线程判断视图中所有节点的活动性。
+ * 如果一个节点没有响应，config 模块将调用 Paxos 的 proposer 删除该节点。当 Paxos 的 acceptor
+ * 通过 Paxos_commit() 接受新的值时，更高层将了解视图的变化。
+ */
 // To be able to bring other nodes up to date to the latest formed
 // view, each node will have a complete history of all view numbers
 // and their values that it knows about. At any time a node can reboot
 // and when it re-joins, it may be many views behind; by remembering
 // all views, the other nodes can bring this re-joined node up to
 // date.
+/**
+ * 为了能够使其他节点更新到最新形成的视图，每个节点都将拥有所有视图编号及其已知值的完整历史记录。
+ * 在任何时候，一个节点可以重新启动，当它重新加入时，它可能会落后许多视图；通过记住所有视图，
+ * 其他节点可以更新重新连接的节点。
+ */
 
 static void *
 heartbeatthread(void *x)
@@ -244,6 +265,7 @@ config::heartbeater()
   
   while (1) {
 
+    // 3 秒一次心跳
     gettimeofday(&now, NULL);
     next_timeout.tv_sec = now.tv_sec + 3;
     next_timeout.tv_nsec = 0;
@@ -260,30 +282,34 @@ config::heartbeater()
       continue;
     }
 
-    //find the node with the smallest id
+    // find the node with the smallest id
     m = me;
     for (unsigned i = 0; i < cmems.size(); i++) {
-      if (m > cmems[i])
-	m = cmems[i];
+      if (m > cmems[i]) m = cmems[i];
     }
 
+    /**
+     * 视图中编号最小的节点是 master
+     * master 向所有 slave 发送心跳，slave 可能会奔溃
+     * slave 只向 master 发送心跳，master 本身也可能会奔溃
+     */
     if (m == me) {
-      //if i am the one with smallest id, ping the rest of the nodes
+      // if i am the one with smallest id, ping the rest of the nodes
       for (unsigned i = 0; i < cmems.size(); i++) {
-	if (cmems[i] != me) {
-	  if ((h = doheartbeat(cmems[i])) != OK) {
-	    stable = false;
-	    m = cmems[i];
-	    break;
-	  }
-	}
+        if (cmems[i] != me) {
+          if ((h = doheartbeat(cmems[i])) != OK) {
+            stable = false; // 如果有 slave 心跳失败了，标记需要进行视图更改
+            m = cmems[i]; // 需要从视图中删除的 slave
+            break;
+          }
+        }
       }
     } else {
-      //the rest of the nodes ping the one with smallest id
-	if ((h = doheartbeat(m)) != OK) 
-	    stable = false;
+      // the rest of the nodes ping the one with smallest id
+      if ((h = doheartbeat(m)) != OK) stable = false;
     }
-
+    // 进行视图更改，删除奔溃节点
+    // 当 vid 不等于 myvid 时，视图更改已经完成了，不需要再次触发
     if (!stable && vid == myvid) {
       remove_wo(m);
     }
@@ -308,6 +334,11 @@ config::heartbeat(std::string m, unsigned vid, int &r)
   return ret;
 }
 
+/**
+ * @brief 向 m 发送心跳消息
+ * 
+ * @param m 目标地址
+ */
 config::heartbeat_t
 config::doheartbeat(std::string m)
 {
@@ -318,20 +349,19 @@ config::doheartbeat(std::string m)
 
   tprintf("doheartbeater to %s (%d)\n", m.c_str(), vid);
   handle h(m);
-  VERIFY(pthread_mutex_unlock(&cfg_mutex)==0);
+  VERIFY(pthread_mutex_unlock(&cfg_mutex) == 0);
   rpcc *cl = h.safebind();
   if (cl) {
-    ret = cl->call(paxos_protocol::heartbeat, me, vid, r, 
-	           rpcc::to(1000));
-  } 
-  VERIFY(pthread_mutex_lock(&cfg_mutex)==0);
+    ret = cl->call(paxos_protocol::heartbeat, me, vid, r, rpcc::to(1000));
+  }
+  VERIFY(pthread_mutex_lock(&cfg_mutex) == 0);
   if (ret != paxos_protocol::OK) {
-    if (ret == rpc_const::atmostonce_failure || 
-	ret == rpc_const::oldsrv_failure) {
+    if (ret == rpc_const::atmostonce_failure ||
+        ret == rpc_const::oldsrv_failure) {
       mgr.delete_handle(m);
     } else {
-      tprintf("doheartbeat: problem with %s (%d) my vid %d his vid %d\n", 
-	     m.c_str(), ret, vid, r);
+      tprintf("doheartbeat: problem with %s (%d) my vid %d his vid %d\n",
+              m.c_str(), ret, vid, r);
       if (ret < 0) res = FAILURE;
       else res = VIEWERR;
     }
@@ -339,4 +369,3 @@ config::doheartbeat(std::string m)
   tprintf("doheartbeat done %d\n", res);
   return res;
 }
-

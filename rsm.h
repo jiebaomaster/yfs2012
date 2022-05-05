@@ -18,7 +18,7 @@ class rsm : public config_view_change {
  protected:
   std::map<int, handler *> procs;
   config *cfg;
-  class rsm_state_transfer *stf;
+  class rsm_state_transfer *stf; // 序列化和反序列化节点状态
   rpcs *rsmrpc;
   // On slave: expected viewstamp of next invoke request
   // On primary: viewstamp for the next request from rsm_client
@@ -53,8 +53,8 @@ class rsm : public config_view_change {
 
   pthread_mutex_t rsm_mutex;
   pthread_mutex_t invoke_mutex;
-  pthread_cond_t recovery_cond;
-  pthread_cond_t sync_cond;
+  pthread_cond_t recovery_cond; // 等待下一次进行状态恢复
+  pthread_cond_t sync_cond; // master 等待 slave 同步成功
 
   void execute(int procno, std::string req, std::string &r);
   rsm_client_protocol::status client_invoke(int procno, std::string req, 
