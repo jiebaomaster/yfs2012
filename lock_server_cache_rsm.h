@@ -15,11 +15,17 @@ class lock_server_cache_rsm : public rsm_state_transfer {
   struct lock { // 锁
     lock_protocol::lockid_t lid;
     std::string owner; // 锁当前被哪个客户端占用，host:port
-    lock_protocol::xid_t xid; 
     std::set<std::string> waiters; // 等待该锁的客户端
     bool revoked; // 是否已向持有锁的客户端发送 revoke
     lock_state state; // 锁的状态
-    lock(lock_protocol::lockid_t lid): lid(lid), revoked(false), state(FREE) {}
+
+    /* 处理 master 崩溃时，主节点不能确定是否已经处理最后一次请求的问题 */
+    lock_protocol::xid_t xid; // 最后一次请求的序号
+    lock_protocol::status lastRet; // 最后一次处理结果
+    std::string lastRequirer; // 最后的需求者
+    bool needRevoke; // 最后一次处理是否触发 revoke
+
+    lock(lock_protocol::lockid_t lid): lid(lid), revoked(false), state(FREE), xid(-1) {}
     
     void dumpLock() { // 打印锁的状态
       printf("[lockid %llu, xid %llu] owner %s, waiters {", lid, xid, owner.c_str());

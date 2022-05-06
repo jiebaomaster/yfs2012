@@ -63,6 +63,7 @@ lock_server_cache_rsm::revoker()
 
     auto cl = h.safebind();
     cl->call(rlock_protocol::revoke, lock.lid, lock.xid, r);
+    // TODO revoke 失败，代表 lock_client 崩溃了，则应该认为锁被释放了
   }
 }
 
@@ -98,13 +99,26 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
 {
   lock_protocol::status ret = lock_protocol::OK;
 
-  pthread_mutex_lock(&map_mutex);
+  ScopedLock _l(&map_mutex);
 
   auto iter = lockid_lock.find(lid);
   if (iter == lockid_lock.end()) // 请求的锁不存在就新建一个
     iter = lockid_lock.insert({lid, lock(lid)}).first;
 
   lock &lock = iter->second;
+
+  // 处理重复的请求
+  if (lock.xid == xid && lock.lastRequirer == id) {
+    printf("lock_server_cache_rsm::acquire duplicate lid %llu [%s:%llu]\n", lid,
+           id.c_str(), xid);
+    // 重发 revoke，防止 revoke 因为 master 崩溃丢失
+    if (lock.needRevoke) {
+      revoking_locks.enq(iter);
+    }
+    return lock.lastRet;
+  }
+  
+  lock.needRevoke = false;
   switch (lock.state) {
     case FREE:
       lock.state = LOCKED;
@@ -114,7 +128,7 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
     case LOCKED:
       lock.state = LOCKED_AND_WAIT;
       lock.waiters.insert(id);
-      revoking_locks.enq(iter); // 有别的客户端在等待时，占用锁的客户端需要尽快释放
+      lock.needRevoke = true;  // 有别的客户端在等待时，占用锁的客户端需要尽快释放
       ret = lock_protocol::RETRY;  // 告诉客户端需要重新请求锁
       break;
 
@@ -132,7 +146,7 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
         if (lock.waiters.size()) {
           // 还有其他客户端在等待，分配给 C 之后通知 C 这个锁需要立即释放
           lock.state = lock_state::LOCKED_AND_WAIT;
-          revoking_locks.enq(iter);
+          lock.needRevoke = true;
         } else {
           lock.state = lock_state::LOCKED;
         }
@@ -146,7 +160,13 @@ int lock_server_cache_rsm::acquire(lock_protocol::lockid_t lid, std::string id,
       break;
   }
 
-  pthread_mutex_unlock(&map_mutex);
+  // 更新本次请求的处理结果
+  lock.xid = xid;
+  lock.lastRequirer = id;
+  lock.lastRet = ret;
+  if (lock.needRevoke) {
+    revoking_locks.enq(iter);
+  }
 
   return ret;
 }
@@ -157,20 +177,27 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
 {
   lock_protocol::status ret = lock_protocol::OK;
 
-  pthread_mutex_lock(&map_mutex);
+  ScopedLock _l(&map_mutex);
 
   auto iter = lockid_lock.find(lid);
   if (iter == lockid_lock.end()) {
-    pthread_mutex_unlock(&map_mutex);
     printf("ERROR: can't find lock with lockid = %llu\n", lid);
     return lock_protocol::NOENT;
   }
 
   lock &lock = iter->second;
+  // 处理重复的请求
+  if (lock.xid == xid && lock.lastRequirer == id) {
+    printf("lock_server_cache_rsm::release duplicate lid %llu [%s:%llu]\n", lid,
+           id.c_str(), xid);
+
+    return lock.lastRet;
+  }
+
   switch (lock.state) {
     case FREE:
     case RETRYING:
-      printf("ERROR: can't releaer a lock with state RETRYING/FREE\n");
+      printf("ERROR: can't release a lock with state RETRYING/FREE\n");
       ret = lock_protocol::IOERR;
       break;
 
@@ -187,8 +214,12 @@ lock_server_cache_rsm::release(lock_protocol::lockid_t lid, std::string id,
     default:
       break;
   }
-
-  pthread_mutex_unlock(&map_mutex);
+  
+  // 更新本次请求的处理结果
+  lock.xid = xid;
+  lock.lastRequirer = id;
+  lock.lastRet = ret;
+  lock.needRevoke = false;
 
   return ret;
 }
@@ -205,7 +236,8 @@ lock_server_cache_rsm::marshal_state()
   state << static_cast<unsigned long long>(lockid_lock.size());
   for (const auto &lockpair : lockid_lock) {
     const auto &lock = lockpair.second;
-    state << lock.lid << lock.owner << lock.xid << lock.revoked << lock.state;
+    state << lock.lid << lock.owner << lock.revoked << lock.state;
+    state << lock.xid << lock.lastRet << lock.lastRequirer << lock.needRevoke;
     state << static_cast<unsigned long long>(lock.waiters.size());
     for (auto const &waiter : lock.waiters) {
       state << waiter;
@@ -231,7 +263,8 @@ lock_server_cache_rsm::unmarshal_state(std::string state)
     auto iter = locks.insert({lid, lock(lid)}).first;
     auto &l = iter->second;
     int l_state;
-    s >> l.owner >> l.xid >> l.revoked >> l_state;
+    s >> l.owner >> l.revoked >> l_state;
+    s >> l.xid >> l.lastRet >> l.lastRequirer >> l.needRevoke;
     l.state = static_cast<enum lock_state>(l_state);
     unsigned int waiterSize;
     string w;

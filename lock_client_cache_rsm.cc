@@ -92,6 +92,8 @@ lock_protocol::status
 lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
 {
   int r;
+  struct timeval now;
+  struct timespec next_timeout;
   lock_protocol::status ret = lock_protocol::OK;
   pthread_mutex_lock(&map_mutex);
   auto iter = lockid_lock.find(lid);
@@ -102,7 +104,7 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
   lock_protocol::xid_t t_xid;
   while(true) {
     switch (lock.state) {
-      case NONE: // 第一次请求目标锁，发送
+      case NONE: // 第一次请求目标锁，发送 acquire RPC
         lock.state = ACQUIRING;
         lock.retry = false;
         t_xid = nextXid();
@@ -110,20 +112,33 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
         ret = rsmc->call(lock_protocol::acquire, lid, id, t_xid, r);
         pthread_mutex_lock(&map_mutex);
         if (ret == lock_protocol::OK) {  // 成功从锁服务获取到锁
-
           lock.state = LOCKED;
           goto out;
         } else if (ret == lock_protocol::RETRY) {
-          // 此时锁被其他客户端占用，需要等待锁服务通知重试
+          /**
+           * 如果获取锁需要重试，锁服务会回复 RETRY，并在可以分配之后给客户端
+           * 发送 retry 请求使客户端再次请求。由于网络原因，服务端后发送的
+           * retry 可能在 RETRY 回复之前到达客户端(lock.retry==1)，
+           * 此时没必要将自己加入 retryqueue, 直接重新获取就好了
+           */
           if (!lock.retry) {
             /**
-             * 如果获取锁需要重试，锁服务会回复 RETRY，并在可以分配之后给客户端
-             * 发送 retry 请求使客户端再次请求。由于网络原因，服务端后发送的
-             * retry 可能在 RETRY
-             * 回复之前到达客户端(lock.retry==1)，此时没必要将自己加入
-             * retryqueue, 直接重新获取就好了
+             * 此时锁被其他文件客户端占用，需要等待锁服务通知 retry
+             * 如果 master 在处理 release 时崩溃，可能会没有发送 retry 
+             * 每隔 3s 自动重新请求锁
              */
-            pthread_cond_wait(&lock.retry_queue, &map_mutex);
+            gettimeofday(&now, NULL);
+            next_timeout.tv_sec = now.tv_sec + 3;
+            next_timeout.tv_nsec = 0;
+
+            pthread_cond_timedwait(&lock.retry_queue, &map_mutex, &next_timeout);
+            if (!lock.retry) {
+              printf(
+                  "lock_client_cache_rsm::acquire timeout wakeup retry_queue "
+                  "lid %llu [%s]%llu\n",
+                  lid, id.c_str(), xid);
+              lock.retry = true;
+            }
           }
         }
         break;
@@ -139,8 +154,20 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
             lock.state = LOCKED;
             goto out;
           } else if (ret == lock_protocol::RETRY) {
-            
-            if (!lock.retry) pthread_cond_wait(&lock.retry_queue, &map_mutex);
+            if (!lock.retry) {
+              gettimeofday(&now, NULL);
+              next_timeout.tv_sec = now.tv_sec + 3;
+              next_timeout.tv_nsec = 0;
+
+              pthread_cond_timedwait(&lock.retry_queue, &map_mutex, &next_timeout);
+              if (!lock.retry) {
+                printf(
+                    "lock_client_cache_rsm::acquire timeout wakeup retry_queue "
+                    "lid %llu [%s]%llu\n",
+                    lid, id.c_str(), xid);
+                lock.retry = true;
+              }
+            }
           }
         } else {  // 此时客户端有其他线程正在获取锁，等待获取完成
           pthread_cond_wait(&lock.wait_queue, &map_mutex);
@@ -171,12 +198,11 @@ lock_client_cache_rsm::release(lock_protocol::lockid_t lid)
 {
   int r;
   lock_protocol::status ret = lock_protocol::OK;
-  pthread_mutex_lock(&map_mutex);
+  ScopedLock _l(&map_mutex);
   
   auto iter = lockid_lock.find(lid);
   if(iter == lockid_lock.end()) {
     printf("ERROR: can't find lock with lockid = %llu\n", lid);
-    pthread_mutex_unlock(&map_mutex);
     return lock_protocol::NOENT;
   }
   lock &lock = iter->second;
@@ -189,7 +215,6 @@ lock_client_cache_rsm::release(lock_protocol::lockid_t lid)
     pthread_cond_signal(&lock.wait_queue);
   }
 
-  pthread_mutex_unlock(&map_mutex);
   return ret;
 }
 
@@ -202,11 +227,11 @@ lock_client_cache_rsm::revoke_handler(lock_protocol::lockid_t lid,
 {
   int r;
   rlock_protocol::status ret = rlock_protocol::OK;
-  pthread_mutex_lock(&map_mutex);
+  ScopedLock _l(&map_mutex);
+
   auto iter = lockid_lock.find(lid);
   if(iter == lockid_lock.end()) {
     printf("ERROR: can't find lock with lockid = %llu\n", lid);
-    pthread_mutex_unlock(&map_mutex);
     return lock_protocol::NOENT;
   }
   lock &lock = iter->second;
@@ -217,8 +242,6 @@ lock_client_cache_rsm::revoke_handler(lock_protocol::lockid_t lid,
     lock.has_revoked = true;
   } 
 
-
-  pthread_mutex_unlock(&map_mutex);
   return ret;
 }
 
@@ -230,20 +253,24 @@ lock_client_cache_rsm::retry_handler(lock_protocol::lockid_t lid,
 			         lock_protocol::xid_t xid, int &)
 {
   rlock_protocol::status ret = rlock_protocol::OK;
-  pthread_mutex_lock(&map_mutex);
+  ScopedLock _l(&map_mutex);
   auto iter = lockid_lock.find(lid);
   if(iter == lockid_lock.end()) {
     printf("ERROR: can't find lock with lockid = %llu\n", lid);
-    pthread_mutex_unlock(&map_mutex);
     return lock_protocol::NOENT;
   }
-
+  
   lock &lock = iter->second;
-  lock.retry = true; // 标记已经收到 重试 请求
-  // 唤醒一个对该锁的申请请求
-  pthread_cond_signal(&lock.retry_queue);
-
-  pthread_mutex_unlock(&map_mutex);
+  /**
+   * retry 等待 3 秒之后会自动重启，此时 lock.retry=true
+   * 如果锁已经超时唤醒了，避免重复唤醒
+   */
+  if (!lock.retry) {
+    lock.retry = true; // 标记已经收到 重试 请求
+    // 唤醒一个对该锁的申请请求
+    pthread_cond_signal(&lock.retry_queue);
+  }
+  
   return ret;
 }
 

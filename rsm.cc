@@ -314,7 +314,10 @@ rsm::sync_with_primary()
   // You fill this in for Lab 7
   // Keep synchronizing with primary until the synchronization succeeds,
   // or there is a commited viewchange
+  // rpc 有可能失败（如 slave 发送 statetransfer 时 master 还没进入 inSync 状态），
+  // 不断尝试，直到同步任务完成
   while(1) {
+    // 发生 view 变更，跳过本轮同步，进行新一轮的数据同步
     if (vid_commit != vid_insync)
       return false;
 
@@ -323,10 +326,11 @@ rsm::sync_with_primary()
       tprintf("rsm::sync_with_primary statetransfer failure\n");
       continue;
     }
-
+    // 发生 view 变更，跳过本轮同步，进行新一轮的数据同步
     if (vid_commit != vid_insync)
       return false;
 
+    // 通知 master 同步完成
     if(!statetransferdone(m))  {
       tprintf("rsm::sync_with_primary statetransferdone failure\n");
       continue;
@@ -489,14 +493,15 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
   int ret = rsm_client_protocol::OK;
   // 整个请求的处理期间都需要持有锁，保持请求的按序执行
   ScopedLock _l(&invoke_mutex);
+  tprintf("rsm::client_invoke get client request");
   // You fill this in for Lab 7
   // 正在同步的不能处理客户端请求
-  if(inviewchange) {
+  if (inviewchange) {
     ret = rsm_client_protocol::BUSY;
     return ret;
   }
   // 非 master 不能处理客户端请求
-  if(cfg->myaddr() != primary) {
+  if (cfg->myaddr() != primary) {
     ret = rsm_client_protocol::NOTPRIMARY;
     return ret;
   }
@@ -504,17 +509,18 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
   auto vs = myvs;
   auto m = cfg->get_view(vid_commit);
   int dummy;
-  for(auto &n : m) { // 转发请求给视图中所有 slave
-    if(n == cfg->myaddr()) continue;
+  for (auto &n : m) {  // 转发请求给视图中所有 slave
+    if (n == cfg->myaddr()) continue;
 
     handle h(n);
     auto cl = h.safebind();
-    if(cl)
-      ret = cl->call(rsm_protocol::invoke, procno, vs, req, dummy, rpcc::to(1000));
+    if (cl)
+      ret = cl->call(rsm_protocol::invoke, procno, vs, req, dummy,
+                     rpcc::to(1000));
 
-    if(!cl || ret != rsm_protocol::OK) {
+    if (!cl || ret != rsm_protocol::OK) {
       // rsm 内部错误
-      if(ret == rsm_protocol::ERR) {
+      if (ret == rsm_protocol::ERR) {
         tprintf("client_invoke invoke on slave %s error\n", n.c_str());
       } else {
         tprintf("client_invoke invoke failure %s ret: %u \n", n.c_str(), ret);
@@ -525,7 +531,7 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
   }
   // 在 master 执行锁协议调用
   execute(procno, req, r);
-  
+
   last_myvs = myvs;  
   myvs.seqno++; // 更新序列号
 

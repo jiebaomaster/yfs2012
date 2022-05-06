@@ -28,6 +28,17 @@ void
 rsm_client::primary_failure()
 {
   // You fill this in for Lab 7
+  /**
+   * 选择第一个 slave 作为本地新的 master
+   * 即便选出的 master 不是集群真正的 master 也没关系，
+   * invoke 中会进行重试获取真正的 master
+   */
+  for(auto & n : known_mems) {
+    if(primary != n) {
+      primary = n;
+      break;
+    }
+  }
 }
 
 /**
