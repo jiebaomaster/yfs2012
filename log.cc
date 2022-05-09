@@ -14,6 +14,7 @@ log::log(acceptor *_acc, std::string _me)
   logread();
 }
 
+// 读取日志文件，恢复本地 acceptor 的状态
 void
 log::logread(void)
 {

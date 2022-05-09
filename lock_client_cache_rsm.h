@@ -34,6 +34,12 @@ class lock_client_cache_rsm : public lock_client {
     bool has_revoked;  // 是否收到锁释放请求，若已经收到，则在下一次释放锁的时候需要请求锁服务释放锁
     bool retry; // 是否收到 重试 请求
     lock_state state;
+    /**
+     * 请求服务的编号
+     * acquire 采用递增编号
+     * release 采用相应的 acquire 编号
+     */
+    lock_protocol::xid_t xid;
     pthread_cond_t wait_queue;  // 客户端已有其他线程占有锁，等待其他线程释放锁
     pthread_cond_t
         release_queue;  // 客户端正在释放锁时，有其他线程获取锁，等待释放后重新请求锁
@@ -46,6 +52,7 @@ class lock_client_cache_rsm : public lock_client {
   };
 
  private:
+  friend class rsm_client;
   rsm_client *rsmc; // 用于代替 rpc 客户端，发送请求
   class lock_release_user *lu; // 辅助类，执行文件缓存的刷新
   int rlock_port;

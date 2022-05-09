@@ -38,12 +38,12 @@ lock_client_cache_rsm::lock_client_cache_rsm(std::string xdst,
   rpcs *rlsrpc = new rpcs(rlock_port);
   rlsrpc->reg(rlock_protocol::revoke, this, &lock_client_cache_rsm::revoke_handler);
   rlsrpc->reg(rlock_protocol::retry, this, &lock_client_cache_rsm::retry_handler);
-  xid = 0;
+  xid = 1;
   // You fill this in Step Two, Lab 7
   // - Create rsmc, and use the object to do RPC 
   //   calls instead of the rpcc object of lock_client
   // rpc 代理，通过 rsmc 发送的请求会被 rsm master 接收
-  rsmc = new rsm_client(xdst);
+  rsmc = new rsm_client(xdst, this);
   pthread_mutex_init(&map_mutex, NULL);
   pthread_t th;
   int r = pthread_create(&th, NULL, &releasethread, (void *) this);
@@ -60,7 +60,6 @@ lock_client_cache_rsm::releaser()
   // send a release RPC.
   int r;
   lock_protocol::status ret = lock_protocol::OK;
-  lock_protocol::xid_t t_xid;
   map<lock_protocol::lockid_t, lock>::iterator iter;
   while(1) {
     releasing_lock.deq(&iter);
@@ -68,15 +67,19 @@ lock_client_cache_rsm::releaser()
     pthread_mutex_lock(&map_mutex);
     auto &lock  = iter->second;
     lock.has_revoked = false;
-    t_xid = nextXid();
     pthread_mutex_unlock(&map_mutex); // rpc 请求不应该发生在持有本地锁的时候
 
     // 释放锁之前，刷新当前锁对应文件的缓存，其他客户端在获取文件时先获取锁，触发锁的释放，刷新文件，保证分布式系统的文件一致性
     if(lu)
       lu->dorelease(lock.lid);
-    ret = rsmc->call(lock_protocol::release, lock.lid, id, t_xid, r);
+    ret = rsmc->call(lock_protocol::release, lock.lid, id, lock.xid, r);
     
     pthread_mutex_lock(&map_mutex);
+
+    if (ret != lock_protocol::OK) {
+      tprintf("lock_client_cache_rsm::releaser ERROR release failure\n");
+      continue;
+    }
 
     lock.state = NONE; // 锁服务进行释放后，锁不属于该客户端了
     // 唤醒所有在锁释放期间，对该锁的申请请求
@@ -101,15 +104,14 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
     iter = lockid_lock.emplace(lid, lid).first;
   }
   lock &lock = iter->second;
-  lock_protocol::xid_t t_xid;
   while(true) {
     switch (lock.state) {
       case NONE: // 第一次请求目标锁，发送 acquire RPC
         lock.state = ACQUIRING;
         lock.retry = false;
-        t_xid = nextXid();
+        lock.xid = nextXid();
         pthread_mutex_unlock(&map_mutex);
-        ret = rsmc->call(lock_protocol::acquire, lid, id, t_xid, r);
+        ret = rsmc->call(lock_protocol::acquire, lid, id, lock.xid, r);
         pthread_mutex_lock(&map_mutex);
         if (ret == lock_protocol::OK) {  // 成功从锁服务获取到锁
           lock.state = LOCKED;
@@ -146,9 +148,9 @@ lock_client_cache_rsm::acquire(lock_protocol::lockid_t lid)
       case ACQUIRING: // 正在请求目标锁 或者 正在等待锁服务通知重试
         if (lock.retry) {  // 已收到 重试 请求，重新获取锁
           lock.retry = false;
-          t_xid = nextXid();
+          lock.xid = nextXid();
           pthread_mutex_unlock(&map_mutex);
-          ret = rsmc->call(lock_protocol::acquire, lid, id, t_xid, r);
+          ret = rsmc->call(lock_protocol::acquire, lid, id, lock.xid, r);
           pthread_mutex_lock(&map_mutex);
           if (ret == lock_protocol::OK) {
             lock.state = LOCKED;
@@ -235,6 +237,12 @@ lock_client_cache_rsm::revoke_handler(lock_protocol::lockid_t lid,
     return lock_protocol::NOENT;
   }
   lock &lock = iter->second;
+  if (xid != lock.xid) {
+    tprintf("lock_client_cache_rsm::revoke_handler ERROR xid %llu vs %llu\n",
+           xid, lock.xid);
+    return lock_protocol::IOERR;
+  }
+
   if(lock.state == FREE) { // 当前锁空闲，可以直接请求锁服务释放
     lock.state = RELEASING; // 当前锁正在被释放
     releasing_lock.enq(iter);
@@ -261,6 +269,11 @@ lock_client_cache_rsm::retry_handler(lock_protocol::lockid_t lid,
   }
   
   lock &lock = iter->second;
+  if (xid != lock.xid) {
+    tprintf("lock_client_cache_rsm::revoke_handler ERROR xid %llu vs %llu\n",
+           xid, lock.xid);
+    return lock_protocol::IOERR;
+  }
   /**
    * retry 等待 3 秒之后会自动重启，此时 lock.retry=true
    * 如果锁已经超时唤醒了，避免重复唤醒

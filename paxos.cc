@@ -195,31 +195,34 @@ proposer::prepare(unsigned instance, std::vector<std::string> &accepts,
     if(cl)
       ret = cl->call(paxos_protocol::preparereq, me, a, r, rpcc::to(1000));
     pthread_mutex_lock(&pxs_mutex);
-    if(cl) {
-      if (ret == paxos_protocol::OK) {
-        // 本次请求被 accptor 判断为已过期，直接用已达成共识的值更新本地视图
-        if (r.oldinstance) { 
-          acc->commit(instance, r.v_a);
-          return false;
-        }
-        // 2. 在 accepts 中统计实际完成准备的节点
-        if (r.accept) {
-          accepts.push_back(n);
-          /**
-           * 在 prepare 阶段发现本次投票已经存在 accepted 的提案了
-           * 
-           * 如果已经有节点在本次 paxos 实例中接受了值 v1，
-           * 已接受的值不能被改变，则应放弃当前提案的值，
-           * 转而提案已经接受的值 v1
-           * 这时实际上可以认为X执行了一次(不知是否已经中断的)其他Proposer的修复
-           * 
-           * X将看到的最大vrnd对应的v作为X的phase-2将要写入的值
-           */
-          if (r.n_a.n > n_max.n) {
-            v = r.v_a;
-            n_max = r.n_a;
-          }
-        }
+    if (!cl || ret != paxos_protocol::OK) {
+      tprintf("proposer::prepare failure in %s ret %d\n", n.c_str(), ret);
+      continue;
+    }
+
+    // 本次请求被 accptor 判断为已过期，直接用已达成共识的值更新本地视图
+    if (r.oldinstance) {
+      tprintf("proposer::prepare old instance in %s vid %d:%s\n", n.c_str(), instance, r.v_a.c_str());
+
+      acc->commit(instance, r.v_a);
+      return false;
+    }
+    // 2. 在 accepts 中统计实际完成准备的节点
+    if (r.accept) {
+      accepts.push_back(n);
+      /**
+       * 在 prepare 阶段发现本次投票已经存在 accepted 的提案了
+       *
+       * 如果已经有节点在本次 paxos 实例中接受了值 v1，
+       * 已接受的值不能被改变，则应放弃当前提案的值，
+       * 转而提案已经接受的值 v1
+       * 这时实际上可以认为X执行了一次(不知是否已经中断的)其他Proposer的修复
+       *
+       * X将看到的最大vrnd对应的v作为X的phase-2将要写入的值
+       */
+      if (r.n_a.n > n_max.n) {
+        v = r.v_a;
+        n_max = r.n_a;
       }
     }
   }
@@ -323,7 +326,7 @@ acceptor::preparereq(std::string src, paxos_protocol::preparearg a,
     // 已经决策完毕，直接返回最新的决策结果 v_a
     r.oldinstance = true;
     r.accept = false;
-    r.v_a = v_a;
+    r.v_a = values[a.instance];
   } else if(a.n > n_h) { 
     // 正在进行的 paxos 实例
     // 准备接受更高的 round
@@ -426,8 +429,8 @@ acceptor::dump()
 void
 acceptor::restore(std::string s)
 {
-  l->restore(s);
-  l->logread();
+  l->restore(s); // 保存日志
+  l->logread(); // 使用日志恢复 acceptor 的状态
 }
 
 

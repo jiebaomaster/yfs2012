@@ -14,9 +14,10 @@
 // on the replicated state machine passing the RPC as an argument.  This way 
 // the replicated state machine isn't service specific; any server can use it.
 //
+class lock_client;
 
 class rsm_client {
-
+  lock_client* user;
  protected:
   std::string primary; // 本地所知的主节点
   std::vector<std::string> known_mems; // 本地所知的 集群视图
@@ -24,7 +25,7 @@ class rsm_client {
   void primary_failure();
   bool init_members();
  public:
-  rsm_client(std::string dst);
+  rsm_client(std::string dst, lock_client* user);
   rsm_protocol::status invoke(int proc, std::string req, std::string &rep);
 
   template<class R, class A1>

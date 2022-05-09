@@ -4,9 +4,10 @@
 #include <stdio.h>
 #include <handle.h>
 #include "lang/verify.h"
+#include "lock_client_cache_rsm.h"
 
 
-rsm_client::rsm_client(std::string dst)
+rsm_client::rsm_client(std::string dst, lock_client* user) : user(user)
 {
   printf("create rsm_client\n");
   std::vector<std::string> mems;
@@ -54,7 +55,7 @@ rsm_client::invoke(int proc, std::string req, std::string &rep)
   int ret;
   ScopedLock ml(&rsm_client_mutex);
   while (1) {
-    printf("rsm_client::invoke proc %x primary %s\n", proc, primary.c_str());
+    printf("rsm_client::invoke in [%s], proc %x primary %s\n",static_cast<lock_client_cache_rsm*>(user)->id.c_str(), proc, primary.c_str());
     handle h(primary);
 
     VERIFY(pthread_mutex_unlock(&rsm_client_mutex)==0);
@@ -69,14 +70,14 @@ rsm_client::invoke(int proc, std::string req, std::string &rep)
       goto prim_fail;
     }
 
-    printf("rsm_client::invoke proc %x primary %s ret %d\n", proc, 
+    printf("rsm_client::invoke in [%s], proc %x primary %s ret %d\n",static_cast<lock_client_cache_rsm*>(user)->id.c_str(), proc, 
            primary.c_str(), ret);
     if (ret == rsm_client_protocol::OK) {
       break;
     }
     // RSM 集群正在同步，过段时间再次请求
     if (ret == rsm_client_protocol::BUSY) {
-      printf("rsm is busy %s\n", primary.c_str());
+      printf("in [%s], rsm is busy %s\n",static_cast<lock_client_cache_rsm*>(user)->id.c_str(), primary.c_str());
       sleep(3);
       continue;
     }
@@ -84,15 +85,15 @@ rsm_client::invoke(int proc, std::string req, std::string &rep)
     // 因为选主只需要大多数节点的回复，所以本节点可能不知道重新选主了
     // 而原先的 primary 返回他不是主节点了，则他肯定知道最新的集群视图
     if (ret == rsm_client_protocol::NOTPRIMARY) {
-      printf("primary %s isn't the primary--let's get a complete list of mems\n", 
-             primary.c_str());
+      printf("in [%s], primary %s isn't the primary--let's get a complete list of mems\n", 
+             static_cast<lock_client_cache_rsm*>(user)->id.c_str(), primary.c_str());
       if (init_members())
         continue;
     }
 prim_fail:
-    printf("primary %s failed ret %d\n", primary.c_str(), ret);
+    printf("in [%s], primary %s failed ret %d\n",static_cast<lock_client_cache_rsm*>(user)->id.c_str(), primary.c_str(), ret);
     primary_failure();
-    printf ("rsm_client::invoke: retry new primary %s\n", primary.c_str());
+    printf ("in [%s], rsm_client::invoke: retry new primary %s\n",static_cast<lock_client_cache_rsm*>(user)->id.c_str(), primary.c_str());
   }
   return ret;
 }

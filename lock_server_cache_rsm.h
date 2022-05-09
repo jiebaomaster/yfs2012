@@ -3,6 +3,7 @@
 
 #include <string>
 #include <map>
+#include <unordered_map>
 #include <set>
 
 #include "lock_protocol.h"
@@ -12,6 +13,15 @@
 
 class lock_server_cache_rsm : public rsm_state_transfer {
   enum lock_state {FREE, LOCKED, LOCKED_AND_WAIT, RETRYING};
+  struct last_request {
+    lock_protocol::xid_t xid; // 最后一次请求的序号
+    lock_protocol::status lastRet; // 最后一次处理结果
+    /**
+     * 最后一次处理是否触发 revoke
+     * master 奔溃时可能会丢失 revoke，新的 master 遇到重复请求时应该触发 revoke
+     */
+    bool needRevoke;
+  };
   struct lock { // 锁
     lock_protocol::lockid_t lid;
     std::string owner; // 锁当前被哪个客户端占用，host:port
@@ -19,20 +29,26 @@ class lock_server_cache_rsm : public rsm_state_transfer {
     bool revoked; // 是否已向持有锁的客户端发送 revoke
     lock_state state; // 锁的状态
 
-    /* 处理 master 崩溃时，主节点不能确定是否已经处理最后一次请求的问题 */
-    lock_protocol::xid_t xid; // 最后一次请求的序号
-    lock_protocol::status lastRet; // 最后一次处理结果
-    std::string lastRequirer; // 最后的需求者
-    bool needRevoke; // 最后一次处理是否触发 revoke
+    /**
+     * per client per lock last request
+     * 处理节点发生崩溃时，遇到的重复请求问题
+     */
+    std::unordered_map<std::string, last_request> requests;
 
-    lock(lock_protocol::lockid_t lid): lid(lid), revoked(false), state(FREE), xid(-1) {}
+    lock(lock_protocol::lockid_t lid): lid(lid), revoked(false), state(FREE) {}
     
     void dumpLock() { // 打印锁的状态
-      printf("[lockid %llu, xid %llu] owner %s, waiters {", lid, xid, owner.c_str());
-      for(auto &s : waiters) {
+      printf("dumpLock=> [lockid %llu] owner %s,\ndumpLock=> waiters {", lid,
+             owner.c_str());
+      for (auto &s : waiters) {
         printf("%s, ", s.c_str());
       }
-      printf("}\n");
+      printf("}\ndumpLock=> requests: {\n");
+      for (auto &r : requests) {
+        printf("dumpLock=> [%s => %llu %d %d]\n", r.first.c_str(), r.second.xid,
+               r.second.lastRet, r.second.needRevoke);
+      }
+      printf("dumpLock=> end <=\n");
     }
   };
  private:

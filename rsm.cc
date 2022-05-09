@@ -288,15 +288,31 @@ rsm::sync_with_backups()
       break;
     }
   }
+  struct timeval now;
+  struct timespec next_timeout;
   // master 开始等待 slave 的同步请求
   while (!backups.empty()) {
-    if(vid_commit != vid_insync)
+    /**
+     * 在数据同步期间发生了视图更改，放弃本次同步，立即开始新的同步
+     */
+    if (vid_commit != vid_insync) {
+      tprintf(
+          "rsm::sync_with_backups master get new view[%u->%u] before "
+          "synchronized\n",
+          vid_insync, vid_commit);
       break;
+    }
+
     string b;
     for(auto & bb : backups)
       b += bb + ';';
     tprintf("master begin wait for sync, backups: %s\n", b.c_str());
-    pthread_cond_wait(&sync_cond, &rsm_mutex);
+
+    // 每 3s 醒来一次，检查数据同步期间是否有 view 更改
+    gettimeofday(&now, NULL);
+    next_timeout.tv_sec = now.tv_sec + 3;
+    next_timeout.tv_nsec = 0;
+    pthread_cond_timedwait(&sync_cond, &rsm_mutex, &next_timeout);
   }
 
   insync = false;
@@ -324,6 +340,7 @@ rsm::sync_with_primary()
     // 同步状态
     if(!statetransfer(m)) {
       tprintf("rsm::sync_with_primary statetransfer failure\n");
+      sleep(1);
       continue;
     }
     // 发生 view 变更，跳过本轮同步，进行新一轮的数据同步
@@ -425,7 +442,7 @@ rsm::join(std::string m) {
     return false;
   }
   tprintf("rsm::join: succeeded %s\n", r.log.c_str());
-  cfg->restore(r.log);
+  cfg->restore(r.log); // 使用从 master 拉取的 paxos 状态恢复本地的 paxos
   return true;
 }
 
@@ -493,7 +510,6 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
   int ret = rsm_client_protocol::OK;
   // 整个请求的处理期间都需要持有锁，保持请求的按序执行
   ScopedLock _l(&invoke_mutex);
-  tprintf("rsm::client_invoke get client request");
   // You fill this in for Lab 7
   // 正在同步的不能处理客户端请求
   if (inviewchange) {
@@ -527,6 +543,15 @@ rsm::client_invoke(int procno, std::string req, std::string &r)
       }
       ret = rsm_client_protocol::BUSY;
       return ret;
+    }
+    /**
+     * test12 在第一个 slave 调用完成后 kill master，
+     * 第一个 slave 会被选为新的 master，并在新的 master 上正确处理重复的当前请求
+     */
+    breakpoint1();
+    {
+      ScopedLock _ll(&rsm_mutex);
+      partition1();
     }
   }
   // 在 master 执行锁协议调用
@@ -564,6 +589,12 @@ rsm::invoke(int proc, viewstamp vs, std::string req, int &dummy)
   // 在本地执行请求
   execute(proc, req, r);
   
+  /**
+   * test13 在第二个 slave 执行完后重新启动第二个 slave 
+   * rsm 对新的 view 达成一致，同步状态
+   */
+  breakpoint1();
+
   last_myvs = myvs;
   // 更新期望的 viewstamp
   myvs.seqno++;
@@ -624,15 +655,6 @@ rsm::transferdonereq(std::string m, unsigned vid, int &)
     ret = rsm_protocol::BUSY;
     goto out;  
   }
-  /**
-   * 在数据同步期间发生了视图更改，放弃本次同步，立即开始新的同步
-   */
-  if(vid_insync != vid_commit) {
-    tprintf("rsm::transferdonereq master get new view[%u->%u] before synchronized\n",vid_insync, vid_commit);
-    pthread_cond_signal(&sync_cond);
-    ret = rsm_protocol::BUSY;
-    goto out;
-  }
 
   // 移除已完成同步的备份
   for(auto iter = backups.begin(); iter !=  backups.end(); iter++) {
@@ -678,7 +700,7 @@ rsm::joinreq(std::string m, viewstamp last, rsm_protocol::joinres &r)
     bool succ = cfg->add(m, vid_cache);
     VERIFY (pthread_mutex_lock(&rsm_mutex) == 0);
     if (cfg->ismember(m, cfg->vid())) { // 加入成功
-      r.log = cfg->dump();
+      r.log = cfg->dump(); // 将 master acceptor 的状态传给 slave
       tprintf("joinreq: ret %d log %s\n:", ret, r.log.c_str());
     } else {
       tprintf("joinreq: failed; proposer couldn't add %d\n", succ);
