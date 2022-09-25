@@ -148,7 +148,7 @@ int
 rpcc::bind(TO to)
 {
 	int r;
-	int ret = call(rpc_const::bind, 0, r, to);
+	int ret = call(rpc_const::bind, 0, r, to); // 绑定的方法是直接发送一个 bind 类型 rpc
 	if(ret == 0){
 		ScopedLock ml(&m_);
 		bind_done_ = true;
@@ -186,141 +186,137 @@ rpcc::cancel(void)
   printf("rpcc::cancel: done\n");
 }
 
-int
-rpcc::call1(unsigned int proc, marshall &req, unmarshall &rep,
-		TO to)
-{
+int rpcc::call1(unsigned int proc, marshall &req, unmarshall &rep, TO to) {
 
-	caller ca(0, &rep);
-        int xid_rep;
-	{
-		ScopedLock ml(&m_);
+  caller ca(0, &rep);
+  int xid_rep;
+  {
+    ScopedLock ml(&m_);
 
-		if((proc != rpc_const::bind && !bind_done_) ||
-				(proc == rpc_const::bind && bind_done_)){
-			jsl_log(JSL_DBG_1, "rpcc::call1 rpcc has not been bound to dst or binding twice\n");
-			return rpc_const::bind_failure;
-		}
+    if ((proc != rpc_const::bind && !bind_done_) ||
+        (proc == rpc_const::bind && bind_done_)) {
+      jsl_log(JSL_DBG_1,
+              "rpcc::call1 rpcc has not been bound to dst or binding twice\n");
+      return rpc_const::bind_failure;
+    }
 
-		if(destroy_wait_){
-		  return rpc_const::cancel_failure;
-		}
+    if (destroy_wait_) {
+      return rpc_const::cancel_failure;
+    }
 
-		ca.xid = xid_++;
-		calls_[ca.xid] = &ca;
+    ca.xid = xid_++;
+    calls_[ca.xid] = &ca;
 
-		req_header h(ca.xid, proc, clt_nonce_, srv_nonce_,
-                             xid_rep_window_.front());
-		req.pack_req_header(h);
-                xid_rep = xid_rep_window_.front();
-	}
+    req_header h(ca.xid, proc, clt_nonce_, srv_nonce_, xid_rep_window_.front());
+    req.pack_req_header(h);
+    xid_rep = xid_rep_window_.front();
+  }
 
-	TO curr_to;
-	struct timespec now, nextdeadline, finaldeadline; 
+  TO curr_to;
+  struct timespec now, nextdeadline, finaldeadline;
 
-	clock_gettime(CLOCK_REALTIME, &now);
-	add_timespec(now, to.to, &finaldeadline); 
-	curr_to.to = to_min.to;
+  clock_gettime(CLOCK_REALTIME, &now);
+  add_timespec(now, to.to, &finaldeadline);
+  curr_to.to = to_min.to;
 
-	bool transmit = true;
-	connection *ch = NULL;
+  bool transmit = true;
+  connection *ch = NULL;
 
-	while (1){
-		if(transmit){
-			get_refconn(&ch);
-			if(ch){
-			        if(reachable_) {
-                                        request forgot;
-                                        {
-                                                ScopedLock ml(&m_);
-                                                if (dup_req_.isvalid() && xid_rep_done_ > dup_req_.xid) {
-                                                        forgot = dup_req_;
-                                                        dup_req_.clear();
-                                                }
-                                        }
-                                        if (forgot.isvalid()) 
-                                                ch->send((char *)forgot.buf.c_str(), forgot.buf.size());
-                                        ch->send(req.cstr(), req.size());
-                                }
-				else jsl_log(JSL_DBG_1, "not reachable\n");
-				jsl_log(JSL_DBG_2, 
-						"rpcc::call1 %u just sent req proc %x xid %u clt_nonce %d\n", 
-						clt_nonce_, proc, ca.xid, clt_nonce_); 
-			}
-			transmit = false; // only send once on a given channel
-		}
+  while (1) {
+    if (transmit) {
+      get_refconn(&ch);
+      if (ch) {
+        if (reachable_) {
+          request forgot;
+          {
+            ScopedLock ml(&m_);
+            if (dup_req_.isvalid() && xid_rep_done_ > dup_req_.xid) {
+              forgot = dup_req_;
+              dup_req_.clear();
+            }
+          }
+          if (forgot.isvalid())
+            ch->send((char *)forgot.buf.c_str(), forgot.buf.size());
+          ch->send(req.cstr(), req.size());
+        } else
+          jsl_log(JSL_DBG_1, "not reachable\n");
+        jsl_log(JSL_DBG_2,
+                "rpcc::call1 %u just sent req proc %x xid %u clt_nonce %d\n",
+                clt_nonce_, proc, ca.xid, clt_nonce_);
+      }
+      transmit = false; // only send once on a given channel
+    }
 
-		if(!finaldeadline.tv_sec)
-			break;
+    if (!finaldeadline.tv_sec)
+      break;
 
-		clock_gettime(CLOCK_REALTIME, &now);
-		add_timespec(now, curr_to.to, &nextdeadline); 
-		if(cmp_timespec(nextdeadline,finaldeadline) > 0){
-			nextdeadline = finaldeadline;
-			finaldeadline.tv_sec = 0;
-		}
+    clock_gettime(CLOCK_REALTIME, &now);
+    add_timespec(now, curr_to.to, &nextdeadline);
+    if (cmp_timespec(nextdeadline, finaldeadline) > 0) {
+      nextdeadline = finaldeadline;
+      finaldeadline.tv_sec = 0;
+    }
 
-		{
-			ScopedLock cal(&ca.m);
-			while (!ca.done){
-			        jsl_log(JSL_DBG_2, "rpcc:call1: wait\n");
-				if(pthread_cond_timedwait(&ca.c, &ca.m,
-                                                 &nextdeadline) == ETIMEDOUT){
-				  	jsl_log(JSL_DBG_2, "rpcc::call1: timeout\n");
-					break;
-				}
-			}
-			if(ca.done){
-			        jsl_log(JSL_DBG_2, "rpcc::call1: reply received\n");
-				break;
-			}
-		}
-
-		if(retrans_ && (!ch || ch->isdead())){
-			// since connection is dead, retransmit
-                        // on the new connection 
-			transmit = true; 
-		}
-		curr_to.to <<= 1;
-	}
-
-	{ 
-                // no locking of ca.m since only this thread changes ca.xid 
-		ScopedLock ml(&m_);
-		calls_.erase(ca.xid);
-		// may need to update the xid again here, in case the
-		// packet times out before it's even sent by the channel.
-		// I don't think there's any harm in maybe doing it twice
-		update_xid_rep(ca.xid);
-
-		if(destroy_wait_){
-		  VERIFY(pthread_cond_signal(&destroy_wait_c_) == 0);
-		}
-	}
-
-        if (ca.done && lossytest_)
-        {
-                ScopedLock ml(&m_);
-                if (!dup_req_.isvalid()) {
-                        dup_req_.buf.assign(req.cstr(), req.size());
-                        dup_req_.xid = ca.xid;
-                }
-                if (xid_rep > xid_rep_done_)
-                        xid_rep_done_ = xid_rep;
+    {
+      ScopedLock cal(&ca.m);
+      while (!ca.done) {
+        jsl_log(JSL_DBG_2, "rpcc:call1: wait\n");
+        if (pthread_cond_timedwait(&ca.c, &ca.m, &nextdeadline) == ETIMEDOUT) {
+          jsl_log(JSL_DBG_2, "rpcc::call1: timeout\n");
+          break;
         }
+      }
+      if (ca.done) {
+        jsl_log(JSL_DBG_2, "rpcc::call1: reply received\n");
+        break;
+      }
+    }
 
-	ScopedLock cal(&ca.m);
+    if (retrans_ && (!ch || ch->isdead())) {
+      // since connection is dead, retransmit
+      // on the new connection
+      transmit = true;
+    }
+    curr_to.to <<= 1;
+  }
 
-	jsl_log(JSL_DBG_2, 
-			"rpcc::call1 %u call done for req proc %x xid %u %s:%d done? %d ret %d \n", 
-			clt_nonce_, proc, ca.xid, inet_ntoa(dst_.sin_addr),
-			ntohs(dst_.sin_port), ca.done, ca.intret);
+  {
+    // no locking of ca.m since only this thread changes ca.xid
+    ScopedLock ml(&m_);
+    calls_.erase(ca.xid);
+    // may need to update the xid again here, in case the
+    // packet times out before it's even sent by the channel.
+    // I don't think there's any harm in maybe doing it twice
+    update_xid_rep(ca.xid);
 
-	if(ch)
-		ch->decref();
+    if (destroy_wait_) {
+      VERIFY(pthread_cond_signal(&destroy_wait_c_) == 0);
+    }
+  }
 
-	// destruction of req automatically frees its buffer
-	return (ca.done? ca.intret : rpc_const::timeout_failure);
+  if (ca.done && lossytest_) {
+    ScopedLock ml(&m_);
+    if (!dup_req_.isvalid()) {
+      dup_req_.buf.assign(req.cstr(), req.size());
+      dup_req_.xid = ca.xid;
+    }
+    if (xid_rep > xid_rep_done_)
+      xid_rep_done_ = xid_rep;
+  }
+
+  ScopedLock cal(&ca.m);
+
+  jsl_log(JSL_DBG_2,
+          "rpcc::call1 %u call done for req proc %x xid %u %s:%d done? %d ret "
+          "%d \n",
+          clt_nonce_, proc, ca.xid, inet_ntoa(dst_.sin_addr),
+          ntohs(dst_.sin_port), ca.done, ca.intret);
+
+  if (ch)
+    ch->decref();
+
+  // destruction of req automatically frees its buffer
+  return (ca.done ? ca.intret : rpc_const::timeout_failure);
 }
 
 void
@@ -450,6 +446,7 @@ rpcs::got_pdu(connection *c, char *b, int sz)
 
 	djob_t *j = new djob_t(c, b, sz);
 	c->incref();
+	// 将本次的事件放入线程池处理
 	bool succ = dispatchpool_->addObjJob(this, &rpcs::dispatch, j);
 	if(!succ || !reachable_){
 		c->decref();

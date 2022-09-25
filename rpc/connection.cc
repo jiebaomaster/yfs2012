@@ -32,7 +32,7 @@ connection::connection(chanmgr *m1, int f1, int l1)
 	VERIFY(pthread_cond_init(&send_complete_,0)==0);
  
         VERIFY(gettimeofday(&create_time_, NULL) == 0); 
-
+	// 将自身添加到事件循环中，事件循环是单例
 	PollMgr::Instance()->add_callback(fd_, CB_RDONLY, this);
 }
 
@@ -143,15 +143,16 @@ connection::send(char *b, int sz)
 		}
 	}
 
-	if (!writepdu()) {
+	if (!writepdu()) { // 尝试写
 		dead_ = true;
 		VERIFY(pthread_mutex_unlock(&m_) == 0);
 		PollMgr::Instance()->block_remove_fd(fd_);
 		VERIFY(pthread_mutex_lock(&m_) == 0);
-	}else{
-		if (wpdu_.solong == wpdu_.sz) {
-		}else{
+	}else{ // 写成功
+		if (wpdu_.solong == wpdu_.sz) { // 全部写完了
+		}else{ // 写了一部分
 			//should be rare to need to explicitly add write callback
+			// 注册监听可写事件，并同步等待到数据写完
 			PollMgr::Instance()->add_callback(fd_, CB_WRONLY, this);
 			while (!dead_ && wpdu_.solong >= 0 && wpdu_.solong < wpdu_.sz) {
 				VERIFY(pthread_cond_wait(&send_complete_,&m_) == 0);
@@ -201,7 +202,7 @@ connection::read_cb(int s)
 
 	bool succ = true;
 	if (!rpdu_.buf || rpdu_.solong < rpdu_.sz) {
-		succ = readpdu();
+		succ = readpdu(); // 将 socket 消息读取到读缓冲区
 	}
 
 	if (!succ) {
@@ -211,6 +212,7 @@ connection::read_cb(int s)
 	}
 
 	if (rpdu_.buf && rpdu_.sz == rpdu_.solong) {
+		// 将消息作为包装成事件传递给线程池处理
 		if (mgr_->got_pdu(this, rpdu_.buf, rpdu_.sz)) {
 			//chanmgr has successfully consumed the pdu
 			rpdu_.buf = NULL;
@@ -248,6 +250,7 @@ connection::readpdu()
 {
 	if (!rpdu_.sz) {
 		int sz, sz1;
+		// 先读取本次消息长度，处理粘包问题
 		int n = read(fd_, &sz1, sizeof(sz1));
 
 		if (n == 0) {
@@ -275,15 +278,15 @@ connection::readpdu()
 
 		rpdu_.sz = sz;
 		VERIFY(rpdu_.buf == NULL);
-		rpdu_.buf = (char *)malloc(sz+sizeof(sz));
+		rpdu_.buf = (char *)malloc(sz+sizeof(sz)); // 分配本次消息的缓冲区，大小为一开始读出的 n
 		VERIFY(rpdu_.buf);
 		bcopy(&sz1,rpdu_.buf,sizeof(sz));
 		rpdu_.solong = sizeof(sz);
 	}
-
+	// 读取消息体
 	int n = read(fd_, rpdu_.buf + rpdu_.solong, rpdu_.sz - rpdu_.solong);
 	if (n <= 0) {
-		if (errno == EAGAIN)
+		if (errno == EAGAIN) // 读完了
 			return true;
 		if (rpdu_.buf)
 			free(rpdu_.buf);
@@ -342,6 +345,7 @@ tcpsconn::tcpsconn(chanmgr *m1, int port, int lossytest)
 	flags |= O_NONBLOCK;
 	fcntl(pipe_[0], F_SETFL, flags);
 
+	// 在一个新线程中开始监听 socket 新链接
 	VERIFY((th_ = method_thread(this, false, &tcpsconn::accept_conn)) != 0); 
 }
 
@@ -358,40 +362,41 @@ tcpsconn::~tcpsconn()
 	}	
 }
 
-void
-tcpsconn::process_accept()
-{
-	sockaddr_in sin;
-	socklen_t slen = sizeof(sin);
-	int s1 = accept(tcp_, (sockaddr *)&sin, &slen); 
-	if (s1 < 0) {
-		perror("tcpsconn::accept_conn error");
-		pthread_exit(NULL);
-	}
+void tcpsconn::process_accept() {
+  sockaddr_in sin;
+  socklen_t slen = sizeof(sin);
+	// 接收新连接
+  int s1 = accept(tcp_, (sockaddr *)&sin, &slen);
+  if (s1 < 0) {
+    perror("tcpsconn::accept_conn error");
+    pthread_exit(NULL);
+  }
 
-	jsl_log(JSL_DBG_2, "accept_loop got connection fd=%d %s:%d\n", 
-			s1, inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
-	connection *ch = new connection(mgr_, s1, lossy_);
+  jsl_log(JSL_DBG_2, "accept_loop got connection fd=%d %s:%d\n", s1,
+          inet_ntoa(sin.sin_addr), ntohs(sin.sin_port));
+	// 创建新的连接，并添加到事件循环中
+  connection *ch = new connection(mgr_, s1, lossy_);
 
-        // garbage collect all dead connections with refcount of 1
-        std::map<int, connection *>::iterator i;
-        for (i = conns_.begin(); i != conns_.end();) {
-                if (i->second->isdead() && i->second->ref() == 1) {
-			jsl_log(JSL_DBG_2, "accept_loop garbage collected fd=%d\n",
-					i->second->channo());
-                        i->second->decref();
-                        // Careful not to reuse i right after erase. (i++) will
-                        // be evaluated before the erase call because in C++,
-                        // there is a sequence point before a function call.
-                        // See http://en.wikipedia.org/wiki/Sequence_point.
-                        conns_.erase(i++);
-                } else
-                        ++i;
-        }
+  // garbage collect all dead connections with refcount of 1
+  std::map<int, connection *>::iterator i;
+  for (i = conns_.begin(); i != conns_.end();) {
+    if (i->second->isdead() && i->second->ref() == 1) {
+      jsl_log(JSL_DBG_2, "accept_loop garbage collected fd=%d\n",
+              i->second->channo());
+      i->second->decref();
+      // Careful not to reuse i right after erase. (i++) will
+      // be evaluated before the erase call because in C++,
+      // there is a sequence point before a function call.
+      // See http://en.wikipedia.org/wiki/Sequence_point.
+      conns_.erase(i++);
+    } else
+      ++i;
+  }
 
-	conns_[ch->channo()] = ch;
+  conns_[ch->channo()] = ch;
 }
 
+// 用一个单独的 select 监听新链接
 void
 tcpsconn::accept_conn()
 {
@@ -414,7 +419,7 @@ tcpsconn::accept_conn()
 				VERIFY(0);
 	                }
 		}
-
+		// pipe 被写说明需要关闭监听
 		if (FD_ISSET(pipe_[0], &rfds)) {
 			close(pipe_[0]);
 			close(tcp_);

@@ -7,7 +7,7 @@ LAB4GE=$(shell expr $(LAB) \>\= 4)
 LAB5GE=$(shell expr $(LAB) \>\= 5)
 LAB6GE=$(shell expr $(LAB) \>\= 6)
 LAB7GE=$(shell expr $(LAB) \>\= 7)
-CXXFLAGS =  -g -MMD -Wall -I. -I$(RPC) -DLAB=$(LAB) -DSOL=$(SOL) -D_FILE_OFFSET_BITS=64
+CXXFLAGS = -std=c++11 -g -MMD -Wall -I. -I$(RPC) -DLAB=$(LAB) -DSOL=$(SOL) -D_FILE_OFFSET_BITS=64
 FUSEFLAGS= -D_FILE_OFFSET_BITS=64 -DFUSE_USE_VERSION=25 -I/usr/local/include/fuse -I/usr/include/fuse
 ifeq ($(shell uname -s),Darwin)
   MACFLAGS= -D__FreeBSD__=10
@@ -73,7 +73,7 @@ ifeq ($(LAB7GE),1)
 endif
 lock_tester : $(patsubst %.cc,%.o,$(lock_tester)) rpc/librpc.a
 
-lock_server=lock_server.cc lock_smain.cc
+lock_server=lock_server.cc lock_smain.cc 
 ifeq ($(LAB4GE),1)
   lock_server+=lock_server_cache.cc handle.cc
 endif

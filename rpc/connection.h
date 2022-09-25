@@ -24,9 +24,9 @@ class connection : public aio_callback {
 		struct charbuf {
 			charbuf(): buf(NULL), sz(0), solong(0) {}
 			charbuf (char *b, int s) : buf(b), sz(s), solong(0){}
-			char *buf;
-			int sz;
-			int solong; //amount of bytes written or read so far
+			char *buf; // 缓冲区，每次有新消息都重新分配
+			int sz; // 缓冲区大小
+			int solong; // 已经使用的缓冲区大小
 		};
 
 		connection(chanmgr *m1, int f1, int lossytest=0);
@@ -35,8 +35,9 @@ class connection : public aio_callback {
 		int channo() { return fd_; }
 		bool isdead();
 		void closeconn();
-
+		// 发送缓冲区 b 中的数据
 		bool send(char *b, int sz);
+		// 本链接注册在事件循环中的回调函数
 		void write_cb(int s);
 		void read_cb(int s);
 
@@ -50,12 +51,12 @@ class connection : public aio_callback {
 		bool readpdu();
 		bool writepdu();
 
-		chanmgr *mgr_;
+		chanmgr *mgr_; // 所属事件循环
 		const int fd_;
 		bool dead_;
 
-		charbuf wpdu_;
-		charbuf rpdu_;
+		charbuf wpdu_; // 写缓冲区
+		charbuf rpdu_; // 读缓冲区
                 
                 struct timeval create_time_;
 
@@ -69,6 +70,7 @@ class connection : public aio_callback {
 		pthread_cond_t send_wait_;
 };
 
+// 用来监听新链接的 tcp 套接字
 class tcpsconn {
 	public:
 		tcpsconn(chanmgr *m1, int port, int lossytest=0);
@@ -79,9 +81,8 @@ class tcpsconn {
                 int port_;
 		pthread_mutex_t m_;
 		pthread_t th_;
-		int pipe_[2];
-
-		int tcp_; //file desciptor for accepting connection
+		int pipe_[2]; // 用来监听关闭
+		int tcp_; // 用来监听新连接
 		chanmgr *mgr_;
 		int lossy_;
 		std::map<int, connection *> conns_;

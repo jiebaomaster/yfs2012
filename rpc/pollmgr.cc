@@ -33,6 +33,7 @@ PollMgr::PollMgr() : pending_change_(false)
 
 	VERIFY(pthread_mutex_init(&m_, NULL) == 0);
 	VERIFY(pthread_cond_init(&changedone_c_, NULL) == 0);
+	// 在一个线程中执行事件循环
 	VERIFY((th_ = method_thread(this, false, &PollMgr::wait_loop)) != 0);
 }
 
@@ -103,7 +104,7 @@ PollMgr::wait_loop()
 		}
 		readable.clear();
 		writable.clear();
-		aio_->wait_ready(&readable,&writable);
+		aio_->wait_ready(&readable,&writable); // 进入阻塞等待
 
 		if (!readable.size() && !writable.size()) {
 			continue;
@@ -111,6 +112,7 @@ PollMgr::wait_loop()
 		//no locking of m_
 		//because no add_callback() and del_callback should 
 		//modify callbacks_[fd] while the fd is not dead
+		// 触发回调
 		for (unsigned int i = 0; i < readable.size(); i++) {
 			int fd = readable[i];
 			if (callbacks_[fd])
@@ -161,7 +163,7 @@ SelectAIO::watch_fd(int fd, poll_flag flag)
 		FD_SET(fd,&rfds_);
 		FD_SET(fd,&wfds_);
 	}
-
+	// select 方式添加监听的事件需要重新睡眠，写一个管道唤醒已经阻塞的线程
 	char tmp = 1;
 	VERIFY(write(pipefd_[1], &tmp, sizeof(tmp))==1);
 }

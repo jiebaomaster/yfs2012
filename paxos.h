@@ -16,7 +16,7 @@ class paxos_change {
 
 class acceptor {
  private:
-  log *l;
+  class log *l;
   rpcs *pxs;
   paxos_change *cfg;
   std::string me;
@@ -72,7 +72,7 @@ extern std::string print_members(const std::vector<std::string> &nodes);
 
 class proposer {
  private:
-  log *l;
+  class log *l;
   paxos_change *cfg;
   acceptor *acc; // 本节点的 acceptor
   std::string me; // 节点标志字符串

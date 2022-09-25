@@ -6,6 +6,9 @@
 
 #include "fifo.h"
 
+/**
+ * 线程池
+ */
 class ThrPool {
 
 
@@ -28,7 +31,7 @@ class ThrPool {
 		bool blockadd_;
 
 
-		fifo<job_t> jobq_;
+		fifo<job_t> jobq_; // 阻塞队列
 		std::vector<pthread_t> th_;
 
 		bool addJob(void *(*f)(void *), void *a);

@@ -296,7 +296,7 @@ acceptor::acceptor(class paxos_change *_cfg, bool _first, std::string _me,
   n_a.n = 0;
   n_a.m = me;
   v_a.clear();
-
+  // 新建日志类，这会读取本地的日志以恢复状态
   l = new log (this, me);
 
   // 本节点是集群中的第一个节点
@@ -429,8 +429,8 @@ acceptor::dump()
 void
 acceptor::restore(std::string s)
 {
-  l->restore(s); // 保存日志
-  l->logread(); // 使用日志恢复 acceptor 的状态
+  l->restore(s); // 保存日志到本地文件
+  l->logread(); // 使用文件中的日志恢复 acceptor 的状态（所有instance）
 }
 
 

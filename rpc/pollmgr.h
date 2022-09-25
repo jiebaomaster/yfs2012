@@ -34,6 +34,7 @@ class aio_callback {
 		virtual ~aio_callback() {}
 };
 
+// 单例，事件循环，监听
 class PollMgr {
 	public:
 		PollMgr();
@@ -58,8 +59,8 @@ class PollMgr {
 		pthread_cond_t changedone_c_;
 		pthread_t th_;
 
-		aio_callback *callbacks_[MAX_POLL_FDS];
-		aio_mgr *aio_;
+		aio_callback *callbacks_[MAX_POLL_FDS]; // 事件回调
+		aio_mgr *aio_; // 底层 IO 复用接口，select/epoll
 		bool pending_change_;
 
 };

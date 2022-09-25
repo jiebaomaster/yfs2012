@@ -10,6 +10,7 @@
 #include <stdlib.h>
 #include "lang/verify.h"
 
+// 执行一个线程运行函数 fn
 static pthread_t
 method_thread_parent(void *(*fn)(void *), void *arg, bool detach)
 {

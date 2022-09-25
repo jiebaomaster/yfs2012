@@ -15,6 +15,7 @@
 #include "dmalloc.h"
 #endif
 
+// 此次 rpc 的状态
 class rpc_const {
 	public:
 		static const unsigned int bind = 1;   // handler number reserved for bind
@@ -35,6 +36,7 @@ class rpcc : public chanmgr {
 	private:
 
 		//manages per rpc info
+		// 一次 rpc 请求的上下文
 		struct caller {
 			caller(unsigned int xxid, unmarshall *un);
 			~caller();
@@ -60,7 +62,7 @@ class rpcc : public chanmgr {
 		bool retrans_;
 		bool reachable_;
 
-		connection *chan_;
+		connection *chan_; // 此次 rpc 使用的 tcp 连接
 
 		pthread_mutex_t m_; // protect insert/delete to calls[]
 		pthread_mutex_t chan_m_;
@@ -289,7 +291,7 @@ class rpcs : public chanmgr {
 		bool cb_present; // whether the reply buffer is valid
 										// true=返回值还未产生，正在处理请求；false=已有返回值，已经处理完毕的请求
 		char *buf;      // the reply buffer，保存 rpc 请求的返回值
-		int sz;         // the size of reply buffer，返回值所占空间大小
+		int sz;         // the size of reply buffer，返回值所占空间大小
 	};
 
 	int port_;

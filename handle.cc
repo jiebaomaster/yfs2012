@@ -17,8 +17,9 @@ handle::safebind()
   ScopedLock ml(&h->cl_mutex);
   if (h->del)
     return NULL;
-  if (h->cl)
+  if (h->cl) // 返回已连接到 rpc client
     return h->cl;
+  // 否则，新建一个 rpc client
   sockaddr_in dstsock;
   make_sockaddr(h->m.c_str(), &dstsock);
   rpcc *cl = new rpcc(dstsock);

@@ -99,8 +99,8 @@ void
 config::restore(std::string s)
 {
   ScopedLock ml(&cfg_mutex);
-  acc->restore(s);
-  reconstruct();
+  acc->restore(s); // 重建 acceptor
+  reconstruct(); // 重建 config
 }
 
 std::vector<std::string>
