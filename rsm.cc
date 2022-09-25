@@ -330,32 +330,25 @@ rsm::sync_with_primary()
   // You fill this in for Lab 7
   // Keep synchronizing with primary until the synchronization succeeds,
   // or there is a commited viewchange
-  // rpc 有可能失败（如 slave 发送 statetransfer 时 master 还没进入 inSync 状态），
-  // 不断尝试，直到同步任务完成
-  while(1) {
-    // 发生 view 变更，跳过本轮同步，进行新一轮的数据同步
-    if (vid_commit != vid_insync)
-      return false;
-
+  // rpc 有可能失败（如 slave 发送 statetransfer 时 master 还没进入 inSync
+  // 状态）， 不断尝试，直到同步任务完成
+  while (vid_commit == vid_insync) {
     // 同步状态
-    if(!statetransfer(m)) {
-      tprintf("rsm::sync_with_primary statetransfer failure\n");
-      sleep(1);
-      continue;
-    }
-    // 发生 view 变更，跳过本轮同步，进行新一轮的数据同步
-    if (vid_commit != vid_insync)
-      return false;
-
-    // 通知 master 同步完成
-    if(!statetransferdone(m))  {
-      tprintf("rsm::sync_with_primary statetransferdone failure\n");
-      continue;
-    } else 
-      return true;
+    if (statetransfer(m)) break;
+    tprintf("rsm::sync_with_primary statetransfer failure\n");
   }
-}
 
+  // 发生 view 变更，跳过本轮同步，进行新一轮的数据同步
+  if (vid_commit != vid_insync)
+    return false;
+
+  while(vid_commit == vid_insync) {
+    if(statetransferdone(m)) break;
+    tprintf("rsm::sync_with_primary statetransferdone failure\n");
+  }
+  // 通知 master 同步完成
+  return vid_commit == vid_insync;
+}
 
 /**
  * Call to transfer state from m to the local node.
